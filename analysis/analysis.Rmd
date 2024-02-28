@@ -7,31 +7,41 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "..")
 ```
 
 ## Libraries
 
-```{r}
+```{r libraries}
 library(tidyverse)
 library(haven)
 library(reshape2)
 library(rstanarm)
 library(brms)
 library(tidybayes)
-library(networkD3)
-source("../utils/plotting.r")
-source("../utils/tex.r")
+library(ggalluvial)
+source("utils/plotting.r")
+source("utils/tex.r")
 ```
 
 
 ## Data
 
-```{r}
-df <- readRDS("../data-clean/echo.rds")
+```{r data}
+df <- readRDS("data-clean/echo.rds")
 
-df %>%
-  filter(constriction == "Yes",
-         constriction_sign == "No")
+all_outcomes <- c(
+  "pericard_effusion" = "Pericardial\neffusion",
+  "pericard_thickening" = "Pericardial\nthickening",
+  "pericardial_calc" = "Pericardial\ncalcification",
+  "constriction_sign" = "Signs of\nconstriction",
+  "constriction" = "Definitive\nconstriction"
+)
+
+nrow(filter(df, event_time == "Start"))
+nrow(filter(df, event_time == "End"))
+nrow(filter(df, event_time == "Post"))
+n_distinct(df$record_id)
 ```
 
 
@@ -39,631 +49,1312 @@ df %>%
 
 ### Table 1
 
-```{r}
-df_base_char <- filter(df, event_time == "Start treatment") %>%
-  mutate(`Medical history` = "",
-         `Laboratory results` = "")
+```{r patient-characteristics}
+df_base_char <- df %>%
+  group_by(record_id) %>%
+  slice(1) %>%
+  ungroup()
 
-char_vars <- c("sex", "age_cont", "site", "bmi", "obesity", "smwt_distance_nr", "fa_sit_to_stand_nr",
-               "ce_sys_blpress_nr", "ce_dia_blpress_nr", 
-               "hiv", "hiv_cd4_mm3_nr", "hiv_viral_load",  # "hiv_art_yn", 
-               "tbd_pat_cat", "cavity", "drugresistant", "tbd_diagnosis", "sm_smoking_yn",
-               # "Medical history",
-               "mh_hypertension_yn", # "mh_coronheart_yn", "mh_heart_failure_yn", "mh_diabetes_yn", "mh_lung_disease_yn", "mh_pulm_hyper_yn", "mh_copd_yn", "mh_asthma_yn", "mh_pulfribrosis_yn",
-               # "Laboratory results",
-               "lab_creactive_prot_nr", "lab_neutrophils_nr", "lab_lymphocytes_nr", "lab_eosinophils_nr", "lab_hemoglobin_nr")
-char_var_names <- c("Gender", "Median age in years ", "Site", "BMI (kg/m2)", "Obesity (BMI > 30kg/m2)", "6 minute walk-test distance (m)", "Sit-to-stand test (count per min)",
-                    "Systolic Blood Pressure (mmHg)", "Diastolic Blood Pressure (mmHg)",
-                    "HIV infection status", "Median CD4 cell count ", "HIV viral load", # "HIV ART initiated", 
-                    "Relapse TB case", "Cavitary disease", "TB drug resistance", "TB manifestation", "Smoking",
-                    # "Medical history",
-                    "History of hypertension", # "Coronary heart disease", "Heart failure", "Diabetes", "Lung disease", "Pulmonary hypertension", "COPD", "Asthma", "Pulmonary fibrosis", 
-                    # "Laboratory results",
-                    "Level of CRP (mg/l)", "Level of neutrophils (G/I)", "Level of lymphocytes (G/I)", "Level of eosinophiles (G/I)", "Level of Hb (g/dl)")
-char_var_digits <- c(NA, 0, NA, 1, NA, 0, 0,
-                     0, 0, 
-                     NA, 0, NA, NA, # NA, 
-                     NA, NA, NA, NA,
-                     # NA,
-                     NA, # NA, NA, NA, NA, NA, NA, NA, NA,
-                     # NA,
-                     2, 2, 2, 2, 2, 2)
+char_vars <- c(
+  "Gender" = "sex",
+  "Median age (years)" = "age",
+  "Site" = "site",
+  "BMI (kg/m2)" = "bmi",
+  "Obesity (BMI > 30kg/m2)" = "obesity",
+  "6min walk-test distance (m)" = "smwt_distance_nr",
+  "Sit-to-stand test (repetitions per min)" = "fa_sit_to_stand_nr",
+  "Systolic Blood Pressure (mmHg)" = "ce_sys_blpress_nr",
+  "Diastolic Blood Pressure (mmHg)" = "ce_dia_blpress_nr",
+  "HIV infection status" = "hiv",
+  "Median CD4 cell count (mm3)" = "hiv_cd4_mm3_nr",
+  "HIV viral load (copies/mL)" = "hiv_viral_load",
+  "Relapse TB case" = "tbd_pat_cat",
+  "Cavitary disease" = "cavity",
+  "TB drug resistance" = "drugresistant",
+  "TB manifestation" = "tbd_diagnosis",
+  "Smoking" = "sm_smoking_yn",
+  "History of hypertension" = "mh_hypertension_yn",
+  "Level of CRP (mg/l)" = "lab_creactive_prot_nr",
+  "Level of neutrophils (G/I)" = "lab_neutrophils_nr",
+  "Level of lymphocytes (G/I)" = "lab_lymphocytes_nr",
+  "Level of eosinophiles (G/I)" = "lab_eosinophils_nr",
+  "Level of Hb (g/dl)" = "lab_hemoglobin_nr"
+)
+
+char_digits <- c(
+  "sex" = NA,
+  "age" = 0,
+  "site" = NA,
+  "bmi" = 1,
+  "obesity" = NA,
+  "smwt_distance_nr" = 0,
+  "fa_sit_to_stand_nr" = 0,
+  "ce_sys_blpress_nr" = 0,
+  "ce_dia_blpress_nr" = 0,
+  "hiv" = NA,
+  "hiv_cd4_mm3_nr" = 0,
+  "hiv_viral_load" = 0,
+  "tbd_pat_cat" = NA,
+  "cavity" = NA,
+  "drugresistant" = NA,
+  "tbd_diagnosis" = NA,
+  "sm_smoking_yn" = NA,
+  "mh_hypertension_yn" = NA,
+  "lab_creactive_prot_nr" = 2,
+  "lab_neutrophils_nr" = 2,
+  "lab_lymphocytes_nr" = 2,
+  "lab_eosinophils_nr" = 2,
+  "lab_hemoglobin_nr" = 2
+)
 
 baseline_tab <- tibble(variable = character(), value = character())
 
-for (i in 1:length(char_vars)) {
-  if (is.numeric(df_base_char[[char_vars[i]]])) {
-    val <- paste0(round_k(median(df_base_char[[char_vars[i]]], na.rm = T), char_var_digits[i]), 
-                  " (", round_k(quantile(df_base_char[[char_vars[i]]], .25, na.rm = T), char_var_digits[i]), 
-                  " - ", round_k(quantile(df_base_char[[char_vars[i]]], .75, na.rm = T), char_var_digits[i]), ")")
-    new_row <- tibble(variable = char_var_names[i], value = val)
-  } else if (is.factor(df_base_char[[char_vars[i]]])) {
-    counts <- as.numeric(table(df_base_char[[char_vars[i]]]))
+for (var in char_vars) {
+  print(var)
+  if (is.numeric(df_base_char[[var]])) {
+    n_dig <- char_digits[var]
+    val <- paste0(
+      round_k(median(df_base_char[[var]], na.rm = TRUE), n_dig),
+      " (",
+      round_k(quantile(df_base_char[[var]], .25, na.rm = TRUE), n_dig),
+      " - ",
+      round_k(quantile(df_base_char[[var]], .75, na.rm = TRUE), n_dig),
+      ")"
+    )
+    new_row <- tibble(
+      variable = names(char_vars)[char_vars == var],
+      value = val
+    )
+  } else if (is.factor(df_base_char[[var]])) {
+    counts <- as.numeric(table(df_base_char[[var]]))
     perc_counts <- round(counts / sum(counts) * 100)
     val <- paste0(counts, " (", perc_counts, "%)")
-    names_counts <- names(table(df_base_char[[char_vars[i]]]))
-    new_row <- tibble(variable = c(char_var_names[i], paste0("   ", names_counts)), value = c("", val))
-  } else if (is.character(df_base_char[[char_vars[i]]])) {
-    new_row <- tibble(variable = c("", char_var_names[i]), value = c("", ""))
+    names_counts <- names(table(df_base_char[[var]]))
+    new_row <- tibble(
+      variable = c(
+        names(char_vars)[char_vars == var],
+        paste0("   ", names_counts)
+      ),
+      value = c("", val)
+    )
+  } else if (is.character(df_base_char[[var]])) {
+    new_row <- tibble(
+      variable = c("", names(char_vars)[char_vars == var]),
+      value = c("", "")
+    )
   } else {
-    print(char_vars[i])
-    stop("Incorrect variable type")
+    stop(sprintf("Incorrect variable type for %s", var))
   }
   baseline_tab <- rbind(baseline_tab, new_row)
 }
 
 # manually add third subcategory for hiv status
 hiv_p <- df_base_char$hiv_cd4_mm3_nr[df_base_char$hiv == "Positive"]
-hiv_p <- ifelse(is.na(hiv_p), "Unknown", ifelse(hiv_p < 350, "HIV++ (CD4 <350/mm3)", "HIV+ (CD4>=350/mm3)"))
-hiv_p <- factor(hiv_p, levels = c("HIV++ (CD4 <350/mm3)", "HIV+ (CD4>=350/mm3)", "Unknown"))
+hiv_p <- ifelse(is.na(hiv_p), "Unknown",
+  ifelse(hiv_p < 350, "HIV++ (CD4 <350/mm3)", "HIV+ (CD4>=350/mm3)")
+)
+hiv_p <- factor(
+  hiv_p,
+  levels = c(
+    "HIV++ (CD4 <350/mm3)",
+    "HIV+ (CD4>=350/mm3)",
+    "Unknown"
+  )
+)
 hiv_p_count <- as.numeric(table(hiv_p))
 hiv_p_perc <- round(hiv_p_count / sum(hiv_p_count) * 100, 0)
-hiv_p_row <- tibble(variable = paste0("      ", levels(hiv_p)), value = paste0(hiv_p_count, " (", hiv_p_perc, "%)"))
+hiv_p_row <- tibble(
+  variable = paste0("      ", levels(hiv_p)),
+  value = paste0(hiv_p_count, " (", hiv_p_perc, "%)")
+)
 hiv_p_row_idx <- which(grepl("Positive", baseline_tab$variable))
-baseline_tab <- rbind(baseline_tab[1:hiv_p_row_idx, ], hiv_p_row, baseline_tab[(hiv_p_row_idx+1):nrow(baseline_tab), ])
+baseline_tab <- rbind(
+  baseline_tab[1:hiv_p_row_idx, ],
+  hiv_p_row,
+  baseline_tab[(hiv_p_row_idx + 1):nrow(baseline_tab), ]
+)
 
 # manually add HIV-RNA viral load if detectable
-hiv_viral_load <- df_base_char$hiv_viral_load_nr[!is.na(df_base_char$hiv_viral_load) & df_base_char$hiv_viral_load == "Detectable"]
-hiv_viral_load_val <- paste0(round_k(median(hiv_viral_load, na.rm = T), 0), 
-                  " (", round_k(quantile(hiv_viral_load, .25, na.rm = T), 0), 
-                  " - ", round_k(quantile(hiv_viral_load, .75, na.rm = T), 0), ")")
-hiv_viral_load_row <- tibble(variable = paste0("      ", "Median HIV-RNA viral load (copies/mL)"), value = hiv_viral_load_val)
+nnan_hiv_vl <- !is.na(df_base_char$hiv_viral_load)
+det_hiv_vl <- df_base_char$hiv_viral_load == "Detectable"
+hiv_viral_load <- df_base_char$hiv_viral_load_nr[nnan_hiv_vl & det_hiv_vl]
+hiv_viral_load_val <- paste0(
+  round_k(median(hiv_viral_load, na.rm = TRUE), 0),
+  " (", round_k(quantile(hiv_viral_load, .25, na.rm = TRUE), 0),
+  " - ", round_k(quantile(hiv_viral_load, .75, na.rm = TRUE), 0), ")"
+)
+hiv_viral_load_row <- tibble(
+  variable = paste0("      ", "Median HIV-RNA viral load (copies/mL)"),
+  value = hiv_viral_load_val
+)
 hiv_viral_load_row_idx <- which(grepl("Detectable", baseline_tab$variable))
-baseline_tab <- rbind(baseline_tab[1:hiv_viral_load_row_idx, ], hiv_viral_load_row, baseline_tab[(hiv_viral_load_row_idx+1):nrow(baseline_tab), ])
-baseline_tab[1,] <- c("Variable", paste0("N=", nrow(df_base)))
+baseline_tab <- rbind(
+  c("variable" = "Variable", "value" = paste0("N=", nrow(df_base_char))),
+  baseline_tab[1:hiv_viral_load_row_idx, ],
+  hiv_viral_load_row,
+  baseline_tab[(hiv_viral_load_row_idx + 1):nrow(baseline_tab), ]
+)
 
-write.table(data.frame(baseline_tab), file = "../results/table-1-baseline.txt", row.names = F, col.names = F, sep = ",", quote = F)
+write.table(
+  data.frame(baseline_tab),
+  file = "results/table-1-baseline.txt",
+  row.names = FALSE, col.names = FALSE,
+  sep = ",", quote = FALSE
+)
 ```
 
 
 ### Table 2
 
-```{r}
-echo_vars <- c("lv_dilatation", "abnormal_lv_geometry", "type_lv_geometry_anomaly", "aortic_dilation", "asc_aorta_dilation", 
-               "av_disease", "as", "ar", "mv_disease", "ms", "mr", "tv_disease", "ts", "tr",
-                "lvef_visual", "lvef_simpson", "lv_systolic_dysfunction",
-                "la_dilation", "rv_dilation", "rv_function", "tv_dti", "fac", "rv_long_dysf", "rv_rad_dysf", "ra_dilation", 
-               "pericard_effusion", "pericard_effusion_importance", "pericard_thickening", "pericardial_calc", "constriction_sign", "constriction", 
-               "cvp")
-echo_var_names <- c("LV dilation", "Abnormal LV geometry", "Type of abnormal LV geometry", "Aortic root dilation", "Ascending aorta dilation", 
-                    "Relevant aortic valve disease", "   Aortic stenosis", "   Aortic regurgitation", "Relevant mitral valve disease", "   Mitral stenosis", "   Mitral regurgitation", "Relevant tricuspid valve disease", "   Tricuspid stenosis", "   Tricuspid regurgitation", 
-                    "LVEF (visually assessed)", "LVEF (Simpson BP)", "LV systolic dysfunction",
-                    "LA dilation", "RV dilation", "TAPSE", "TV annulus DTI S'", "RV FAC", "RV longitudinal dysfunction", "RV radial dysfunction", "RA dilation", 
-                    "Pericardial effusion", "Type of pericardial effusion", "Pericardial thickening", "Pericardial calcification", "Signs of constrictions", "Definitive constrictions", 
-                    "Estimated central venous pressure")
-echo_var_digits <- c(rep(NA, 5),
-                     rep(NA, 9),
-                     1, 1, NA,
-                     NA, NA, 1, 1, 1, NA, NA, NA,
-                     rep(NA, 6),
-                     0)
+```{r echo-results}
+echo_vars <- c(
+  "Abnormal LV geometry" = "abnormal_lv_geometry",
+  "Type of abnormal LV geometry" = "type_lv_geometry_anomaly",
+  "Aortic root dilation" = "aortic_dilation",
+  "Ascending aorta dilation" = "asc_aorta_dilation",
+  "Relevant aortic valve disease" = "av_disease",
+  "   Aortic stenosis" = "as",
+  "   Aortic regurgitation" = "ar",
+  "Relevant mitral valve disease" = "mv_disease",
+  "   Mitral stenosis" = "ms",
+  "   Mitral regurgitation" = "mr",
+  "Relevant tricuspid valve disease" = "tv_disease",
+  "   Tricuspid stenosis" = "ts",
+  "   Tricuspid regurgitation" = "tr",
+  "LVEF (visually assessed)" = "lvef_visual",
+  "LVEF (Simpson BP)" = "lvef_simpson",
+  "LV systolic dysfunction" = "lv_systolic_dysfunction",
+  "Diastolic dysfunction according to new guidelines" = "diastolic_dysfunction_new",
+  "LV dilation" = "lv_dilatation",
+  "LA dilation" = "la_dilation",
+  "RV dilation" = "rv_dilation",
+  "TAPSE" = "rv_function",
+  "TV annulus DTI S'" = "tv_dti",
+  "RV FAC" = "fac",
+  "RV longitudinal dysfunction" = "rv_long_dysf",
+  "RV radial dysfunction" = "rv_rad_dysf",
+  "RV/RA Gradient" = "tr_pgmax",
+  "RA dilation" = "ra_dilation",
+  "Pericardial effusion" = "pericard_effusion",
+  "Type of pericardial effusion" = "pericard_effusion_importance",
+  "Pericardial thickening" = "pericard_thickening",
+  "Pericardial calcification" = "pericardial_calc",
+  "Signs of constrictions" = "constriction_sign",
+  "Definitive constrictions" = "constriction",
+  "Estimated central venous pressure" = "cvp"
+)
+echo_digits <- c(
+  "abnormal_lv_geometry" = NA,
+  "type_lv_geometry_anomaly" = NA,
+  "aortic_dilation" = NA,
+  "asc_aorta_dilation" = NA,
+  "av_disease" = NA,
+  "as" = NA,
+  "ar" = NA,
+  "mv_disease" = NA,
+  "ms" = NA,
+  "mr" = NA,
+  "tv_disease" = NA,
+  "ts" = NA,
+  "tr" = NA,
+  "lvef_visual" = 1,
+  "lvef_simpson" = 1,
+  "lv_systolic_dysfunction" = NA,
+  "diastolic_dysfunction_new" = NA,
+  "lv_dilatation" = NA,
+  "la_dilation" = NA,
+  "rv_dilation" = NA,
+  "rv_function" = 1,
+  "tv_dti" = 1,
+  "fac" = 1,
+  "rv_long_dysf" = NA,
+  "rv_rad_dysf" = NA,
+  "tr_pgmax" = 1,
+  "ra_dilation" = NA,
+  "pericard_effusion" = NA,
+  "pericard_effusion_importance" = NA,
+  "pericard_thickening" = NA,
+  "pericardial_calc" = NA,
+  "constriction_sign" = NA,
+  "constriction" = NA,
+  "cvp" = 0
+)
 
 echo_tab <- tibble(variable = character(), value = character())
 
 fill_tab <- function(dat, tab) {
-  for (i in 1:length(echo_vars)) {
-    if (is.numeric(dat[[echo_vars[i]]])) {
-      val_med <- round_k(median(dat[[echo_vars[i]]], na.rm = T), echo_var_digits[i])
+  for (var in echo_vars) {
+    print(var)
+    if (is.numeric(dat[[var]])) {
+      n_dig <- echo_digits[var]
+      val_med <- round_k(median(dat[[var]], na.rm = TRUE), n_dig)
       val_med <- ifelse((val_med == "NA"), "-", val_med)
-      val_low <- round_k(quantile(dat[[echo_vars[i]]], .25, na.rm = T), echo_var_digits[i])
-      val_low <- ifelse((val_low == "NA"), "-", val_med)
-      val_up <- round_k(quantile(dat[[echo_vars[i]]], .75, na.rm = T), echo_var_digits[i])
-      val_up <- ifelse((val_up == "NA"), "-", val_med)
+      val_low <- round_k(quantile(dat[[var]], .25, na.rm = TRUE), n_dig)
+      val_low <- ifelse((val_low == "NA"), "-", val_low)
+      val_up <- round_k(quantile(dat[[var]], .75, na.rm = TRUE), n_dig)
+      val_up <- ifelse((val_up == "NA"), "-", val_up)
       val <- paste0(val_med, " (", val_low, " - ", val_up, ")")
-      new_row <- tibble(variable = echo_var_names[i], value = val)
-    } else if (is.factor(dat[[echo_vars[i]]])) {
-      if (length(table(dat[[echo_vars[i]]])) == 2) {
-        yes_count <- sum(dat[[echo_vars[i]]] == "Yes", na.rm = T)
-        no_count <- sum(dat[[echo_vars[i]]] == "No", na.rm = T)
+      new_row <- tibble(
+        variable = names(echo_vars)[echo_vars == var],
+        value = val
+      )
+    } else if (is.factor(dat[[var]])) {
+      if (length(table(dat[[var]])) == 2) {
+        yes_count <- sum(dat[[var]] == "Yes", na.rm = TRUE)
+        no_count <- sum(dat[[var]] == "No", na.rm = TRUE)
         tot_count <- yes_count + no_count
         perc_count <- round(yes_count / (yes_count + no_count) * 100, 0)
         perc_count <- ifelse(is.na(perc_count), "", perc_count)
         val <- paste0(yes_count, " / ", tot_count, " (", perc_count, "%)")
-        new_row <- tibble(variable = echo_var_names[[i]], value = val)
+        new_row <- tibble(
+          variable = names(echo_vars)[echo_vars == var],
+          value = val
+        )
       } else {
-        counts <- as.numeric(table(dat[[echo_vars[i]]]))
+        counts <- as.numeric(table(dat[[var]]))
         perc_counts <- round(counts / sum(counts) * 100)
         perc_counts <- sapply(perc_counts, function(x) ifelse(is.na(x), "", x))
         val <- paste0(counts, " (", perc_counts, "%)")
-        names_counts <- paste0("  ", names(table(dat[[echo_vars[i]]])))
+        names_counts <- paste0("  ", names(table(dat[[var]])))
         new_row <- tibble(variable = names_counts, value = val)
       }
-    } else if (is.character(dat[[echo_vars[i]]])) {
-      new_row <- tibble(variable = c("", echo_var_names[i]), value = c("", ""))
+    } else if (is.character(dat[[var]])) {
+      new_row <- tibble(
+        variable = c("", names(echo_vars)[echo_vars == var]),
+        value = c("", "")
+      )
     } else {
-      print(echo_vars[i])
+      print(var)
       stop("Incorrect variable type")
     }
     tab <- rbind(tab, new_row)
   }
   return(tab)
-} 
+}
 
-echo_tab_base <- fill_tab(filter(df, event_time == "Start treatment"), echo_tab)
-echo_tab_end <- fill_tab(filter(df, event_time == "End treatment"), echo_tab)
-echo_tab_post <- fill_tab(filter(df, event_time == "Post treatment (6mo)"), echo_tab)
-echo_tab_joint <- cbind(echo_tab_base, echo_tab_end[,2], echo_tab_post[,2])
+echo_tab_base <- fill_tab(
+  filter(df, event_time == "Start"),
+  echo_tab
+)
+echo_tab_end <- fill_tab(
+  filter(df, event_time == "End"),
+  echo_tab
+)
+echo_tab_post <- fill_tab(
+  filter(df, event_time == "Post"),
+  echo_tab
+)
 
-echo_tab_joint[1,] <- c("Variable",
-                        paste0("Start of treatment (N=", nrow(filter(df, event_time == "Start treatment")), ")"),
-                        paste0("End of treatment (N=", nrow(filter(df, event_time == "End treatment")), ")"),
-                        paste0("Post treatment (N=", nrow(filter(df, event_time == "Post treatment (6mo)")), ")"))
+echo_tab_joint <- cbind(
+  echo_tab_base,
+  echo_tab_end[, 2],
+  echo_tab_post[, 2]
+)
 
-write.table(data.frame(echo_tab_joint), file = "../results/table-2-echo.txt", row.names = F, col.names = F, sep = ",", quote = F)
+echo_tab_joint <- rbind(
+  c(
+    "Variable",
+    paste0(
+      "Start of treatment (N=",
+      nrow(filter(df, event_time == "Start")),
+      ")"
+    ),
+    paste0(
+      "End of treatment (N=",
+      nrow(filter(df, event_time == "End")),
+      ")"
+    ),
+    paste0(
+      "Post treatment (N=",
+      nrow(filter(df, event_time == "Post")),
+      ")"
+    )
+  ),
+  echo_tab_joint
+)
+
+write.table(
+  data.frame(echo_tab_joint),
+  file = "results/table-2-echo.txt",
+  row.names = FALSE, col.names = FALSE,
+  sep = ",", quote = FALSE
+)
 ```
 
 ### Supp Tables
 
-```{r}
+```{r echo-by-hiv}
 # subgroup at start
 # by HIV
-echo_tab_base_hiv_pos <- fill_tab(filter(df, event_time == "Start treatment", hiv == "Positive"), echo_tab)
-echo_tab_base_hiv_neg <- fill_tab(filter(df, event_time == "Start treatment", hiv == "Negative"), echo_tab)
-echo_tab_base_hiv <- cbind(echo_tab_base, echo_tab_base_hiv_pos[,2], echo_tab_base_hiv_neg[,2])
+echo_tab_base_hiv_pos <- fill_tab(
+  filter(df, event_time == "Start", hiv == "Positive"),
+  echo_tab
+)
+echo_tab_base_hiv_neg <- fill_tab(
+  filter(df, event_time == "Start", hiv == "Negative"),
+  echo_tab
+)
+echo_tab_base_hiv <- cbind(
+  echo_tab_base,
+  echo_tab_base_hiv_pos[, 2],
+  echo_tab_base_hiv_neg[, 2]
+)
 
-echo_tab_base_hiv[1,] <- c("Variable",
-                           paste0("Overall (N=", nrow(filter(df, event_time == "Start treatment")), ")"),
-                           paste0("HIV positive (N=", nrow(filter(df, event_time == "Start treatment", hiv == "Positive")), ")"),
-                           paste0("HIV negative (N=", nrow(filter(df, event_time == "Start treatment", hiv == "Negative")), ")"))
+echo_tab_base_hiv <- rbind(
+  c(
+    "Variable",
+    paste0(
+      "Overall (N=",
+      nrow(filter(df, event_time == "Start")),
+      ")"
+    ),
+    paste0(
+      "HIV positive (N=",
+      nrow(filter(df, event_time == "Start", hiv == "Positive")),
+      ")"
+    ),
+    paste0(
+      "HIV negative (N=",
+      nrow(filter(df, event_time == "Start", hiv == "Negative")),
+      ")"
+    )
+  ),
+  echo_tab_base_hiv
+)
 
-write.table(data.frame(echo_tab_base_hiv), file = "../results/table-s1-echo-base-by-hiv.txt", row.names = F, col.names = F, sep = ",", quote = F)
+write.table(
+  data.frame(echo_tab_base_hiv),
+  file = "results/table-s1-echo-base-by-hiv.txt",
+  row.names = FALSE, col.names = FALSE,
+  sep = ",", quote = F
+)
 
 
 # subgroup at end
 # by HIV
-echo_tab_end_hiv_pos <- fill_tab(filter(df, event_time == "End treatment", hiv == "Positive"), echo_tab)
-echo_tab_end_hiv_neg <- fill_tab(filter(df, event_time == "End treatment", hiv == "Negative"), echo_tab)
-echo_tab_end_hiv <- cbind(echo_tab_end, echo_tab_end_hiv_pos[,2], echo_tab_end_hiv_neg[,2])
+echo_tab_end_hiv_pos <- fill_tab(
+  filter(df, event_time == "End", hiv == "Positive"),
+  echo_tab
+)
+echo_tab_end_hiv_neg <- fill_tab(
+  filter(df, event_time == "End", hiv == "Negative"),
+  echo_tab
+)
+echo_tab_end_hiv <- cbind(
+  echo_tab_end,
+  echo_tab_end_hiv_pos[, 2],
+  echo_tab_end_hiv_neg[, 2]
+)
 
-echo_tab_end_hiv[1,] <- c("Variable",
-                          paste0("Overall (N=", nrow(filter(df, event_time == "End treatment")), ")"),
-                          paste0("HIV positive (N=", nrow(filter(df, event_time == "End treatment", hiv == "Positive")), ")"),
-                          paste0("HIV negative (N=", nrow(filter(df, event_time == "End treatment", hiv == "Negative")), ")"))
+echo_tab_end_hiv <- rbind(
+  c(
+    "Variable",
+    paste0(
+      "Overall (N=",
+      nrow(filter(df, event_time == "End")),
+      ")"
+    ),
+    paste0(
+      "HIV positive (N=",
+      nrow(filter(df, event_time == "End", hiv == "Positive")),
+      ")"
+    ),
+    paste0(
+      "HIV negative (N=",
+      nrow(filter(df, event_time == "End", hiv == "Negative")),
+      ")"
+    )
+  ),
+  echo_tab_end_hiv
+)
 
-write.table(data.frame(echo_tab_end_hiv), file = "../results/table-s2-echo-end-by-hiv.txt", row.names = F, col.names = F, sep = ",", quote = F)
+write.table(
+  data.frame(echo_tab_end_hiv),
+  file = "results/table-s2-echo-end-by-hiv.txt",
+  row.names = FALSE, col.names = FALSE,
+  sep = ",", quote = FALSE
+)
 ```
 
-## Figures
+## Pericardial pathologies
 
-### Pericard patho
-
-```{r}
-pericard_varnames <- c("Pericard. effusion", "Pericard. thickening", "Pericard. calc", "Signs of constriction", "Definitive constriction")
+```{r pathologies-proportions}
 pericard_pl <- df %>%
-  filter(event_time %in% c("Start treatment", "End treatment")) %>%
-  dplyr::select(event_time, pericard_effusion, pericard_thickening, pericardial_calc, constriction_sign, constriction) %>%
-  set_names(c("event_time", pericard_varnames)) %>%
+  filter(event_time %in% c("Start", "End")) %>%
+  dplyr::select(
+    event_time,
+    pericard_effusion,
+    pericard_thickening,
+    pericardial_calc,
+    constriction_sign,
+    constriction
+  ) %>%
+  set_names(c("event_time", all_outcomes)) %>%
   melt("event_time") %>%
-  mutate(value = as.character(value),
-         value = ifelse(is.na(value), "Unknown", value),
-         value = factor(value, levels = c("Yes", "No", "Unknown"))) %>%
+  mutate(
+    value = as.character(value),
+    value = ifelse(is.na(value), "Unknown", value),
+    value = factor(value, levels = c("No", "Unknown", "Yes"))
+  ) %>%
   group_by(event_time, variable, value) %>%
   summarize(n = n()) %>%
   ungroup() %>%
   group_by(event_time, variable) %>%
   mutate(p = 100 * n / sum(n)) %>%
   ungroup() %>%
-  mutate(variable = factor(variable, levels = pericard_varnames),
-         event_time = factor(event_time, levels = c("Start treatment", "End treatment"))) %>%
-  ggplot(aes(x = variable, y = p, fill = value, label = paste0("N=", n))) +
-  geom_bar(stat = "identity", position = position_stack(), width = .66) +
-  geom_text(size = 8/cm(1), position = position_stack(vjust = 0.5)) +
-  facet_wrap(~ event_time, nrow = 2) +
-  labs(y = "Proportion of participants (%)") +
-  scale_y_continuous() +
-  scale_fill_manual(values = wes_palette("Moonrise2")) +
+  mutate(
+    variable = factor(
+      variable,
+      levels = all_outcomes
+    ),
+    event_time = factor(
+      event_time,
+      levels = c("Start", "End")
+    )
+  ) %>%
+  ggplot(aes(x = event_time, y = p, fill = value)) +
+  geom_bar(stat = "identity", position = position_stack(), width = .7) +
+  facet_wrap(~variable, nrow = 1) +
+  labs(y = "Proportion of participants (%)", x = "Treatment") +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_manual(
+    values = wes_palette("FrenchDispatch")[2:4],
+    breaks = c("Yes", "Unknown", "No")
+  ) +
   theme_custom() +
-  theme(legend.title = element_blank(),
-        legend.position = "bottom",
-        axis.title.x = element_blank())
-pericard_pl
-save_plot(pericard_pl, pdf_file = "../results/pericardial_pathologies.pdf", w = 16, h = 18)
+  theme(
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    legend.key.width = unit(0.35, "cm"),
+    legend.key.height = unit(0.4, "cm")
+  )
+
+save_plot(
+  pericard_pl,
+  pdf_file = "results/pericardial_pathologies.pdf",
+  w = 16, h = 10
+)
 ```
 
+## Imputation
 
-### Assoc. w baseline
+```{r imputation}
+# subset primary outcomes
+df_imp <- df %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    constriction_sign,
+    constriction,
+    pericard_effusion,
+    pericard_thickening,
+    pericardial_calc
+  ) %>%
+  mutate(
+    across(c(
+      constriction_sign,
+      constriction,
+      pericard_effusion,
+      pericard_thickening,
+      pericardial_calc
+    ), ~ ifelse(.x == "Yes", 1, 0))
+  ) %>%
+  melt(c("record_id", "event_time"))
 
-```{r}
-# Subset baseline data
-df_base <- df %>%
-  filter(event_time == "Start treatment") %>%
-  dplyr::select(record_id, event_time, site,
-                constriction_sign, pericard_effusion, pericard_thickening,
-                age, sex, clindiag, cavity, hiv, tbd_pat_cat, drugresistant)
+# proportion of yes / (yes + no)
+p_yes <- df_imp %>%
+  group_by(variable, event_time) %>%
+  summarize(
+    p_yes = sum(value, na.rm = TRUE) / sum(!is.na(value))
+  )
 
-# predictors
-table(df_base$age, useNA = "always")
-table(df_base$sex, useNA = "always")
-table(df_base$cavity, useNA = "always")
-table(df_base$hiv, useNA = "always")
-table(df_base$tbd_pat_cat, useNA = "always")
 
-# outcomes
-table(df_base$pericard_effusion, df_base$pericard_thickening, useNA = "always")
-table(df_base$pericard_effusion, df_base$constriction_sign, useNA = "always")
-table(df_base$pericard_thickening, df_base$constriction_sign, useNA = "always")
-
-# models
-est_assoc_base <- tibble(outcome = character(), predictor = character(), mean = numeric(), lower = numeric(), upper = numeric())
-preds <- c("<25y", "Female", "HIV+", "Relapse", "Cavitation")
-pred_vars <- c("age", "sex", "hiv", "tbd_pat_cat", "cavity")
-outcome_vars <- c("pericard_effusion", "pericard_thickening", "constriction_sign")
-outcomes <- c("Pericardial effusion", "Pericardial thickening", "Signs of constriction")
-
-for (out in 1:length(outcomes)) {
-  for (pr in 1:length(pred_vars)) {
-  
-  # model
-  mod <- stan_glm(as.formula(paste0(outcome_vars[out], "~ site + ", pred_vars[pr])), family = binomial(), data = df_base, seed = 12345, prior = laplace(scale = .3))
-  
-  # estimated association
-  est <- exp(spread_draws(mod, !! sym(paste0(pred_vars[pr], ".*")), regex = T)[[4]])
-  assoc <- tibble(outcome = outcomes[out], predictor = preds[pr], mean = mean(est), lower = quantile(est, .025), upper = quantile(est, .975))
-  
-  # mod <- glm(as.formula(paste0(outcome_vars[out], " ~ site + ", pred_vars[pr])), family = binomial(), data = df_base)
-  # assoc <- tibble(outcome = outcomes[out], predictor = preds[pr], mean = exp(coef(mod)[3]), lower = exp(confint(mod)[3,1]), upper = exp(confint(mod)[3,2]))
-  
-  # add
-  est_assoc_base <- rbind(est_assoc_base, assoc)
-
+# impute data
+impute_bin <- function(k) {
+  df_imp_i <- df_imp
+  df_imp_i$value_imp <- NA
+  for (i in 1:nrow(df_imp)) {
+    if (is.na(df_imp_i$value[i])) {
+      p <- p_yes$p_yes[p_yes$variable == df_imp_i$variable[i] &
+        p_yes$event_time == df_imp_i$event_time[i]]
+      set.seed(k * 1000 + i)
+      df_imp_i$value_imp[i] <- sample(0:1, 1, prob = c(1 - p, p))
+    } else {
+      df_imp_i$value_imp[i] <- df_imp_i$value[i]
+    }
   }
+  df_imp_i <- df_imp_i %>%
+    dplyr::select(-value) %>%
+    dcast(record_id + event_time ~ variable, value.var = "value_imp") %>%
+    left_join(df %>%
+      group_by(record_id) %>%
+      slice(1) %>%
+      ungroup() %>%
+      dplyr::select(
+        record_id, site,
+        age_cat25, sex,
+        clindiag, cavity,
+        hiv, tbd_pat_cat,
+        drugresistant
+      ), by = "record_id")
+  return(df_imp_i)
 }
 
-
-
-# mod_pc <- stan_glm(pericard_condition ~ site + age + sex + hiv + tbd_pat_cat + drugresistant, family = binomial(), data = df_base, seed = 12345,
-#                    prior = laplace(scale = .3))
-# post_draws_pc <- spread_draws(mod_pc, ageYes, sexFemale, hivPositive, tbd_pat_catRelapse, drugresistantYes) %>%
-#   dplyr::select(-.chain, -.iteration, -.draw) %>%
-#   gather() %>%
-#   mutate(value = exp(value)) %>%
-#   group_by(key) %>%
-#   mean_qi(.width = .95) %>%
-#   ungroup()
-# est_assoc_base <- rbind(est_assoc_base, 
-#                         tibble(outcome = "Pericardial condition", predictor = preds, mean = post_draws_pc$value,
-#                                lower = post_draws_pc$.lower, upper = post_draws_pc$.upper))
-# 
-# mod_soc <- stan_glm(signs_of_constriction ~ site + age + sex + hiv + tbd_pat_cat + drugresistant, family = binomial(), data = df_base, seed = 12345,
-#                    prior = laplace(scale = .3))
-# post_draws_soc <- spread_draws(mod_soc, ageYes, sexFemale, hivPositive, tbd_pat_catRelapse, drugresistantYes) %>%
-#   dplyr::select(-.chain, -.iteration, -.draw) %>%
-#   gather() %>%
-#   mutate(value = exp(value)) %>%
-#   group_by(key) %>%
-#   mean_qi(.width = .95) %>%
-#   ungroup()
-# est_assoc_base <- rbind(est_assoc_base, 
-#                         tibble(outcome = "Signs of constriction", predictor = preds, mean = post_draws_soc$value,
-#                                lower = post_draws_soc$.lower, upper = post_draws_soc$.upper))
+df_imp_list <- lapply(1:100, impute_bin)
 ```
 
 
-### Treat comp
+## Treatment comparison
 
-```{r}
-# filter where both treatment start and end are available
-df_comp <- df %>%
-  filter(event_time %in% c("Start treatment", "End treatment")) %>%
-  dplyr::select(record_id, event_time, constriction_sign, constriction, pericard_effusion, pericard_thickening, pericardial_calc) %>%
-  group_by(record_id) %>%
-  filter(sum(event_time == "Start treatment") == 1,
-         sum(event_time == "End treatment") == 1,
-         sum(event_time == "Start treatment") + sum(event_time == "End treatment") == 2) %>%
-  ungroup()
+### All patients
 
-sapply(df_comp, function(x) sum(is.na(x)))
+```{r pericardial-changes}
+# prepare data
+df_comp <- lapply(df_imp_list, function(x) {
+  x %>%
+    filter(event_time %in% c("Start", "End")) %>%
+    dplyr::select(
+      record_id,
+      event_time,
+      constriction_sign,
+      constriction,
+      pericard_effusion,
+      pericard_thickening,
+      pericardial_calc
+    ) %>%
+    melt(c("record_id", "event_time")) %>%
+    group_by(variable, event_time) %>%
+    summarize(
+      n = sum(value),
+      N = n(),
+      p = n / N,
+    ) %>%
+    ungroup() %>%
+    mutate(
+      event_time = factor(
+        event_time,
+        levels = c("Start", "End")
+      )
+    )
+})
 
-df_comp_sub <- df_comp %>%
-  melt(c("record_id", "event_time")) %>%
-  group_by(record_id, variable) %>%
-  mutate(both_available = sum(!is.na(value))) %>%
-  ungroup() %>%
-  filter(both_available == 2) 
+# estimate models
+mod_comp <- list()
+for (out in names(all_outcomes)) {
+  df_comp_out <- lapply(df_comp, function(x) {
+    x %>%
+      filter(variable == out)
+  })
+  mod_comp[[out]] <- brm_multiple(
+    n | trials(N) ~ event_time,
+    family = binomial(),
+    data = df_comp_out,
+    chains = 1,
+    iter = 1000,
+    seed = 12345
+  )
+}
 
-# compute  changes
-df_comp_sub_res <- df_comp_sub %>% 
-  group_by(variable, event_time) %>%
-  summarize(n = sum(value == 'Yes'),
-            p = n / n(),
-            N = n()) %>%
-  ungroup() %>%
-  mutate(variable = factor(ifelse(variable == "constriction_sign", "Constr. signs",
-                                  ifelse(variable == "constriction", "Def. constr.",
-                                         ifelse(variable == "pericard_thickening", "Pericard. thick.", 
-                                                ifelse(variable == "pericardial_calc", "Pericard. calc.",  "Pericard. eff.")))), 
-                           levels = c("Pericard. eff.", "Pericard. thick.", "Pericard. calc.", "Constr. signs", "Def. constr.")),
-         event_time = factor(event_time, levels = c("Start treatment", "End treatment"))) %>%
-  arrange(variable, event_time)
+# posterior probability
+posterior_probability <- function(mod) {
+  mod %>%
+    spread_draws(`b_event_timeEnd`) %>%
+    summarise(
+      pp = sum(`b_event_timeEnd` < 0) / length(`b_event_timeEnd`)
+    ) %>%
+    ungroup() %>%
+    dplyr::select(pp) %>%
+    unlist()
+}
 
-
-# estimate changes
-# p_val_txt <- c()
-# p = 0
-# for (outcome in unique(df_comp_sub_res$variable)) {
-#   p = p + 1
-#   mod_comp <- stan_glm(cbind(N, N - n) ~ event_time, data = filter(df_comp_sub_res, variable == outcome), family = binomial(), seed = 12345)
-#   post_prob <- spread_draws(mod_comp, `event_timeEnd treatment`)
-#   p_val_txt[p] <- sum(post_prob$`event_timeEnd treatment` < 0) / nrow(post_prob)
-# }
-# p_val_txt <- round(p_val_txt * 100, 0)
-# p_val_txt <- paste0("Prob. = ", p_val_txt, "%")
-
-p_cs <- prop.test(df_comp_sub_res$n[df_comp_sub_res$variable=="Constr. signs"], df_comp_sub_res$N[df_comp_sub_res$variable=="Constr. signs"])
-p_dc <- prop.test(df_comp_sub_res$n[df_comp_sub_res$variable=="Def. constr."], df_comp_sub_res$N[df_comp_sub_res$variable=="Def. constr."])
-p_pt <- prop.test(df_comp_sub_res$n[df_comp_sub_res$variable=="Pericard. thick."], df_comp_sub_res$N[df_comp_sub_res$variable=="Pericard. thick."])
-p_pe <- prop.test(df_comp_sub_res$n[df_comp_sub_res$variable=="Pericard. eff."], df_comp_sub_res$N[df_comp_sub_res$variable=="Pericard. eff."])
-p_pc <- prop.test(df_comp_sub_res$n[df_comp_sub_res$variable=="Pericard. calc."], df_comp_sub_res$N[df_comp_sub_res$variable=="Pericard. calc."])
+pp_comp <- c()
+for (out in names(all_outcomes)) {
+  pp_comp[out] <- posterior_probability(mod_comp[[out]])
+}
 
 write_pvalue <- function(x) {
-  if (x < 0.01) {
-    return("p<0.01")
+  if (x > .99) {
+    return("Pr.>99%")
   } else {
-    return(paste0("p=", trimws(format(round(x, 2), ndigits = 2))))
+    return(paste0("Pr.=", trimws(format(round(100 * x), ndigits = 2)), "%"))
   }
 }
 
-p_val_txt <- sapply(c(p_pe$p.value, p_pt$p.value, p_pc$p.value, p_cs$p.value, p_dc$p.value), write_pvalue)
-p_val_y_pos <- c(max(df_comp_sub_res$p[df_comp_sub_res$variable=="Pericard. eff."]),
-                 max(df_comp_sub_res$p[df_comp_sub_res$variable=="Pericard. thick."]), 
-                 max(df_comp_sub_res$p[df_comp_sub_res$variable=="Pericard. calc."]), 
-                 max(df_comp_sub_res$p[df_comp_sub_res$variable=="Constr. signs"]),
-                 max(df_comp_sub_res$p[df_comp_sub_res$variable=="Def. constr."])) + .1
-x_labs <- c(bquote(atop(.("Per. eff."), .(quote(N[Total]*"="))~.(df_comp_sub_res$N[df_comp_sub_res$variable=="Pericard. eff."][1]))),
-            bquote(atop(.("Per. thick."), .(quote(N[Total]*"="))~.(df_comp_sub_res$N[df_comp_sub_res$variable=="Pericard. thick."][1]))),
-            bquote(atop(.("Per. calc."), .(quote(N[Total]*"="))~.(df_comp_sub_res$N[df_comp_sub_res$variable=="Pericard. calc."][1]))),
-            bquote(atop(.("Constr. signs"), .(quote(N[Total]*"="))~.(df_comp_sub_res$N[df_comp_sub_res$variable=="Constr. signs"][1]))),
-            bquote(atop(.("Def. constr."), .(quote(N[Total]*"="))~.(df_comp_sub_res$N[df_comp_sub_res$variable=="Def. constr."][1]))))
+p_val_txt <- sapply(pp_comp, write_pvalue)
 
-pl_comp <- df_comp_sub_res %>%
+# proportion of abnormalities
+df_comp_long <- do.call(rbind, df_comp) %>%
+  mutate(`.imp` = rep(1:100, each = 10)) %>%
+  ungroup() %>%
+  group_by(variable, event_time) %>%
+  summarise(p = mean(p)) %>%
+  ungroup() %>%
+  mutate(
+    variable = recode(variable, !!!all_outcomes),
+    variable = factor(
+      variable,
+      levels = all_outcomes
+    )
+  ) %>%
+  arrange(variable)
+
+p_val_y_pos <- df_comp_long %>%
+  group_by(variable) %>%
+  summarize(
+    p = max(p)
+  ) %>%
+  ungroup() %>%
+  mutate(p = p + .075) %>%
+  arrange(variable) %>%
+  pull(p)
+
+# plot
+pl_comp <- df_comp_long %>%
   ggplot(aes(x = variable, pattern = event_time, y = p)) +
-  geom_bar_pattern(stat = "identity", position = position_dodge(width = .66), 
-                   width = .5, fill = wes_palette("Moonrise2")[1], 
-                   pattern_density = .5, pattern_spacing = .02, pattern_color = "white") +
-  geom_text(aes(label = paste0("n=", n)), vjust = -1, size = 8 / cm(1), position = position_dodge(width = .66)) +
-  ggsignif::geom_signif(annotations = p_val_txt, y_position = p_val_y_pos, 
-                        xmin = c(.75, 1.75, 2.75, 3.75, 4.75), xmax = c(1.25, 2.25, 3.25, 4.25, 5.25), 
-                        textsize = 8 / cm(1)) +
+  geom_bar_pattern(
+    stat = "identity", position = position_dodge(width = .66),
+    width = .5, fill = wes_palette("Moonrise2")[1],
+    pattern_density = .5, pattern_spacing = .02, pattern_color = "white"
+  ) +
+  geom_text(
+    aes(label = paste0(round(100 * p), "%")),
+    vjust = -1, size = 8 / cm(1),
+    position = position_dodge(width = .66)
+  ) +
+  ggsignif::geom_signif(
+    annotations = p_val_txt,
+    y_position = p_val_y_pos,
+    xmin = c(.75, 1.75, 2.75, 3.75, 4.75),
+    xmax = c(1.25, 2.25, 3.25, 4.25, 5.25),
+    textsize = 8 / cm(1)
+  ) +
   scale_fill_manual(values = wes_palette("Chevalier1")) +
-  scale_y_continuous(breaks = scales::breaks_pretty(5), expand = expansion(mult = c(0,0.02)), 
-                     labels = scales::percent_format(suffix = "")) +
-  scale_x_discrete(labels = c("Pericard. effusion", "Pericard. thickening", "Pericard. calcification", "Signs of constriction", "Definitive constriction")) +
+  scale_y_continuous(
+    breaks = scales::breaks_pretty(5),
+    expand = expansion(mult = c(0, 0.025)),
+    labels = scales::percent_format(suffix = "")
+  ) +
+  scale_x_discrete(labels = all_outcomes) +
   scale_pattern_manual(values = c("none", "stripe")) +
   coord_cartesian(ylim = c(0, NA), clip = "off") +
   labs(y = "Proportion (%)", x = "Pericardial changes") +
   theme_custom(8) +
-  theme(legend.position = "bottom", legend.title = element_blank(),
-        axis.title.x = element_blank(),
-        plot.title = element_text(face = 1, size = 8, margin = margin(b = 20)),
-        strip.text = element_text(face = 2),
-        #plot.margin = margin(t = 1.5, unit = "cm"),
-        legend.key.height = unit(0.3, "cm"),
-        legend.key.width = unit(0.5, "cm"),
-        plot.margin = margin(l = 20, t = 5.5, b = 5.5, r = 5.5))
+  theme(
+    legend.position = "bottom", legend.title = element_blank(),
+    axis.title.x = element_blank(),
+    plot.title = element_text(face = 1, size = 8, margin = margin(b = 20)),
+    strip.text = element_text(face = 2),
+    legend.key.height = unit(0.3, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    plot.margin = margin(l = 20, t = 5.5, b = 5.5, r = 5.5)
+  )
 
-pl_comp
-save_plot(pl_comp, pdf_file = "../results/pericardial-changes.pdf", w = 16, h = 8)
+save_plot(
+  pl_comp,
+  pdf_file = "results/pericardial-changes.pdf",
+  w = 16, h = 8
+)
 ```
 
-### Assoc. w improvement
+### FUP Patients - paired analysis
 
-```{r}
-df_imp <- df_comp_sub %>%
-  dplyr::select(-both_available) %>%
-  mutate(variable = factor(variable, levels = c("pericard_effusion", "pericard_thickening", "pericardial_calc", "constriction_sign", "constriction"))) %>%
-  reshape2::dcast(record_id + variable ~ event_time) %>%
-  mutate(treat_change = ifelse(`Start treatment` == "Yes" & `End treatment` == "Yes", "no improvement",
-                               ifelse(`Start treatment` == "No" & `End treatment` == "Yes", "deterioration",
-                                      ifelse(`Start treatment` == "Yes" & `End treatment` == "No", "improvement", "no change"))))
+```{r pericardial-changes-fup}
+# prepare data
+df_comp_fup <- lapply(df_imp_list, function(x) {
+  x %>%
+    filter(event_time %in% c("Start", "End")) %>%
+    group_by(record_id) %>%
+    filter(n() == 2) %>%
+    ungroup() %>%
+    dplyr::select(
+      record_id,
+      event_time,
+      constriction_sign,
+      constriction,
+      pericard_effusion,
+      pericard_thickening,
+      pericardial_calc
+    ) %>%
+    melt(c("record_id", "event_time")) %>%
+    group_by(variable, event_time) %>%
+    summarize(
+      n = sum(value),
+      N = n(),
+      p = n / N,
+    ) %>%
+    ungroup() %>%
+    mutate(
+      event_time = factor(
+        event_time,
+        levels = c("Start", "End")
+      )
+    )
+})
 
-table(df_imp$treat_change[df_imp$variable == "pericard_effusion"])
-table(df_imp$treat_change[df_imp$variable == "pericard_thickening"])
-table(df_imp$treat_change[df_imp$variable == "pericardial_calc"])
-table(df_imp$treat_change[df_imp$variable == "constriction_sign"])
-table(df_imp$treat_change[df_imp$variable == "constriction"])
+# estimate models
+mod_comp_fup <- list()
+for (out in names(all_outcomes)) {
+  df_comp_out <- lapply(df_comp_fup, function(x) {
+    x %>%
+      filter(variable == out)
+  })
+  mod_comp_fup[[out]] <- brm_multiple(
+    n | trials(N) ~ event_time,
+    family = binomial(),
+    data = df_comp_out,
+    chains = 1,
+    iter = 1000,
+    seed = 12345
+  )
+}
 
-df_imp_sub <- df_imp %>%
-  dplyr::select(-`Start treatment`, -`End treatment`) %>%
-  filter(treat_change != "no change") %>%
-  mutate(treat_change = ifelse(treat_change == "improvement", 1, 0)) %>%
-  reshape2::dcast(record_id ~ variable) %>%
-  left_join(dplyr::select(df_base, record_id, site, age, sex, cavity, hiv, tbd_pat_cat, drugresistant), by = "record_id")
+# posterior probability
+pp_comp_fup <- c()
+for (out in names(all_outcomes)) {
+  pp_comp_fup[out] <- posterior_probability(mod_comp_fup[[out]])
+}
 
-table(df_imp_sub$constriction_sign, useNA = "always")
-table(df_imp_sub$pericard_effusion, useNA = "always")
-table(df_imp_sub$pericard_thickening, useNA = "always")
+p_val_txt_fup <- sapply(pp_comp_fup, write_pvalue)
 
+# proportion of abnormalities
+df_comp_long_fup <- do.call(rbind, df_comp_fup) %>%
+  mutate(`.imp` = rep(1:100, each = 10)) %>%
+  ungroup() %>%
+  group_by(variable, event_time) %>%
+  summarise(p = mean(p)) %>%
+  ungroup() %>%
+  mutate(
+    variable = recode(variable, !!!all_outcomes),
+    variable = factor(
+      variable,
+      levels = all_outcomes
+    )
+  ) %>%
+  arrange(variable)
+
+p_val_y_pos_fup <- df_comp_long_fup %>%
+  group_by(variable) %>%
+  summarize(
+    p = max(p)
+  ) %>%
+  ungroup() %>%
+  mutate(p = p + .075) %>%
+  arrange(variable) %>%
+  pull(p)
+
+# plot
+pl_comp_fup <- df_comp_long_fup %>%
+  ggplot(aes(x = variable, pattern = event_time, y = p)) +
+  geom_bar_pattern(
+    stat = "identity", position = position_dodge(width = .66),
+    width = .5, fill = wes_palette("Moonrise2")[1],
+    pattern_density = .5, pattern_spacing = .02, pattern_color = "white"
+  ) +
+  geom_text(
+    aes(label = paste0(round(100 * p), "%")),
+    vjust = -1, size = 8 / cm(1),
+    position = position_dodge(width = .66)
+  ) +
+  ggsignif::geom_signif(
+    annotations = p_val_txt_fup,
+    y_position = p_val_y_pos_fup,
+    xmin = c(.75, 1.75, 2.75, 3.75, 4.75),
+    xmax = c(1.25, 2.25, 3.25, 4.25, 5.25),
+    textsize = 8 / cm(1)
+  ) +
+  scale_fill_manual(values = wes_palette("Chevalier1")) +
+  scale_y_continuous(
+    breaks = scales::breaks_pretty(5),
+    expand = expansion(mult = c(0, 0.025)),
+    labels = scales::percent_format(suffix = "")
+  ) +
+  scale_x_discrete(labels = all_outcomes) +
+  scale_pattern_manual(values = c("none", "stripe")) +
+  coord_cartesian(ylim = c(0, NA), clip = "off") +
+  labs(y = "Proportion (%)", x = "Pericardial changes") +
+  theme_custom(8) +
+  theme(
+    legend.position = "bottom", legend.title = element_blank(),
+    axis.title.x = element_blank(),
+    plot.title = element_text(face = 1, size = 8, margin = margin(b = 20)),
+    strip.text = element_text(face = 2),
+    legend.key.height = unit(0.3, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    plot.margin = margin(l = 20, t = 5.5, b = 5.5, r = 5.5)
+  )
+
+save_plot(
+  pl_comp_fup,
+  pdf_file = "results/pericardial-changes-only-follow-up.pdf",
+  w = 16, h = 8
+)
+```
+
+## Association with patient characteristics
+
+### Baseline
+
+```{r association-baseline}
+df_base <- lapply(df_imp_list, function(x) {
+  filter(x, event_time == "Start")
+})
 
 # models
-est_assoc_imp <- tibble(outcome = character(), predictor = character(), mean = numeric(), lower = numeric(), upper = numeric())
-preds <- c("<25y", "Female", "HIV+", "Relapse", "Cavitation")
-pred_vars <- c("age", "sex", "hiv", "tbd_pat_cat", "cavity")
-outcome_vars <- c("pericard_effusion", "pericard_thickening", "constriction_sign")
-outcomes <- c("Pericardial effusion", "Pericardial thickening", "Signs of constriction")
+est_assoc_base <- tibble(
+  outcome = character(),
+  predictor = character(),
+  mean = numeric(),
+  lower = numeric(),
+  upper = numeric()
+)
+preds <- c(
+  "<25y",
+  "Female",
+  "HIV+",
+  "Relapse",
+  "Cavitation"
+)
+pred_vars <- c(
+  "age_cat25",
+  "sex",
+  "hiv",
+  "tbd_pat_cat",
+  "cavity"
+)
+outcome_vars <- c(
+  "pericard_effusion",
+  "pericard_thickening",
+  "constriction_sign"
+)
+outcomes <- c(
+  "Pericardial effusion",
+  "Pericardial thickening",
+  "Signs of constriction"
+)
 
 for (out in 1:length(outcomes)) {
   for (pr in 1:length(pred_vars)) {
-  
-  # model
-  mod <- stan_glm(as.formula(paste0(outcome_vars[out], "~ site + ", pred_vars[pr])), family = binomial(), data = df_imp_sub, seed = 12345, prior = laplace(scale = .3))
-  
-  # estimated association
-  est <- exp(spread_draws(mod, !! sym(paste0(pred_vars[pr], ".*")), regex = T)[[4]])
-  assoc <- tibble(outcome = outcomes[out], predictor = preds[pr], mean = mean(est), lower = quantile(est, .025), upper = quantile(est, .975))
-  
-  # mod <- glm(as.formula(paste0(outcome_vars[out], " ~ site + ", pred_vars[pr])), family = binomial(), data = df_imp_sub)
-  # assoc <- tibble(outcome = outcomes[out], predictor = preds[pr], mean = exp(coef(mod)[3]), lower = exp(confint(mod)[3,1]), upper = exp(confint(mod)[3,2]))
-  
-  # add
-  est_assoc_imp <- rbind(est_assoc_imp, assoc)
+    # model
+    pr_coef <- paste0(pred_vars[pr], levels(df[[pred_vars[pr]]])[2])
+    mod <- brm_multiple(
+      as.formula(paste0(outcome_vars[out], "~ site + ", pred_vars[pr])),
+      family = bernoulli(),
+      data = df_base,
+      seed = 12345,
+      chains = 1,
+      iter = 1000,
+      prior = prior_string(
+        "student_t(1, 0, .3)",
+        class = "b",
+        coef = pr_coef
+      )
+    )
 
+    # estimated association
+    est <- exp(
+      spread_draws(
+        mod,
+        !!sym(paste0("b_", pr_coef))
+      )[[4]]
+    )
+
+    assoc <- tibble(
+      outcome = outcomes[out],
+      predictor = preds[pr],
+      mean = mean(est),
+      lower = quantile(est, .025),
+      upper = quantile(est, .975)
+    )
+
+    # add
+    est_assoc_base <- rbind(est_assoc_base, assoc)
+  }
+}
+```
+
+### Improvement
+
+```{r association-improvement}
+df_improve <- lapply(df_imp_list, function(x) {
+  x %>%
+    dplyr::select(
+      record_id,
+      event_time,
+      constriction_sign,
+      constriction,
+      pericard_effusion,
+      pericard_thickening,
+      pericardial_calc
+    ) %>%
+    group_by(record_id) %>%
+    filter(event_time == "Start" | event_time == "End") %>%
+    filter(n() == 2) %>%
+    ungroup() %>%
+    melt(c("record_id", "event_time")) %>%
+    mutate(variable = factor(
+      variable,
+      levels = c(
+        "pericard_effusion",
+        "pericard_thickening",
+        "pericardial_calc",
+        "constriction_sign",
+        "constriction"
+      )
+    )) %>%
+    reshape2::dcast(record_id + variable ~ event_time) %>%
+    mutate(
+      treat_change =
+        ifelse(`Start` + `End` == 2, -1,
+          ifelse(`Start` == 0 & `End` == 1, -2,
+            ifelse(`Start` == 1 & `End` == 0, 2, 1)
+          )
+        )
+    ) %>%
+    dplyr::select(-`Start`, -`End`) %>%
+    filter(treat_change != 1) %>%
+    mutate(treat_change = ifelse(treat_change < 0, 0, 1)) %>%
+    left_join(df %>%
+      group_by(record_id) %>%
+      slice(1) %>%
+      ungroup() %>%
+      dplyr::select(
+        record_id, site,
+        age_cat25, sex,
+        clindiag, cavity,
+        hiv, tbd_pat_cat,
+        drugresistant
+      ), by = "record_id")
+})
+
+# models
+est_assoc_imp <- tibble(
+  outcome = character(),
+  predictor = character(),
+  mean = numeric(),
+  lower = numeric(),
+  upper = numeric()
+)
+
+
+for (out in 1:length(outcomes)) {
+  for (pr in 1:length(pred_vars)) {
+    # model
+    pr_coef <- paste0(pred_vars[pr], levels(df[[pred_vars[pr]]])[2])
+    df_improve_out <- lapply(df_improve, function(x) {
+      x %>%
+        filter(variable == outcome_vars[out])
+    })
+    mod <- brm_multiple(
+      as.formula(paste0("treat_change ~ site + ", pred_vars[pr])),
+      family = bernoulli(),
+      data = df_improve_out,
+      seed = 12345,
+      chains = 1,
+      iter = 1000,
+      prior = prior_string(
+        "student_t(1, 0, .3)",
+        class = "b",
+        coef = pr_coef
+      )
+    )
+
+    # estimated association
+    est <- exp(
+      spread_draws(
+        mod,
+        !!sym(paste0("b_", pr_coef))
+      )[[4]]
+    )
+
+    assoc <- tibble(
+      outcome = outcomes[out],
+      predictor = preds[pr],
+      mean = mean(est),
+      lower = quantile(est, .025),
+      upper = quantile(est, .975)
+    )
+
+    # add
+    est_assoc_imp <- rbind(est_assoc_imp, assoc)
   }
 }
 
-# mod_pc <- stan_glm(pericard_condition ~ site + age + sex + hiv + tbd_pat_cat + drugresistant, family = binomial(), data = df_imp_sub, seed = 12345,
-#                    prior = laplace(scale = .3))
-# post_draws_pc <- spread_draws(mod_pc, ageYes, sexFemale, hivPositive, tbd_pat_catRelapse, drugresistantYes) %>%
-#   dplyr::select(-.chain, -.iteration, -.draw) %>%
-#   gather() %>%
-#   mutate(value = exp(value)) %>%
-#   group_by(key) %>%
-#   mean_qi(.width = .95) %>%
-#   ungroup()
-# est_assoc_imp <- rbind(est_assoc_imp, 
-#                         tibble(outcome = "Pericardial condition", predictor = preds, mean = post_draws_pc$value,
-#                                lower = post_draws_pc$.lower, upper = post_draws_pc$.upper))
-# 
-# mod_soc <- stan_glm(signs_of_constriction ~ site + age + sex + hiv + tbd_pat_cat + drugresistant, family = binomial(), data = df_imp_sub, seed = 12345,
-#                    prior = laplace(scale = .3))
-# post_draws_soc <- spread_draws(mod_soc, ageYes, sexFemale, hivPositive, tbd_pat_catRelapse, drugresistantYes) %>%
-#   dplyr::select(-.chain, -.iteration, -.draw) %>%
-#   gather() %>%
-#   mutate(value = exp(value)) %>%
-#   group_by(key) %>%
-#   mean_qi(.width = .95) %>%
-#   ungroup()
-# est_assoc_imp <- rbind(est_assoc_imp, 
-#                         tibble(outcome = "Signs of constriction", predictor = preds, mean = post_draws_soc$value,
-#                                lower = post_draws_soc$.lower, upper = post_draws_soc$.upper))
-
-est_assoc <- rbind(est_assoc_base %>% mutate(what = "Association with baseline"),
-                   est_assoc_imp %>% mutate(what = "Association with improvement")) %>%
-  mutate(outcome = factor(outcome, levels = rev(c("Pericardial effusion", "Pericardial thickening", "Signs of constriction"))),
-         predictor = factor(predictor, levels = rev(c("<25y", "Female", "HIV+", "Relapse", "Cavitation")))) 
+est_assoc <- rbind(
+  est_assoc_base %>% mutate(what = "Association with baseline"),
+  est_assoc_imp %>% mutate(what = "Association with improvement")
+) %>%
+  mutate(
+    outcome = factor(
+      outcome,
+      levels = rev(c(
+        "Pericardial effusion",
+        "Pericardial thickening",
+        "Signs of constriction"
+      ))
+    ),
+    predictor = factor(
+      predictor,
+      levels = rev(c(
+        "<25y",
+        "Female",
+        "HIV+",
+        "Relapse",
+        "Cavitation"
+      ))
+    )
+  )
 
 # plot
 pl_assoc <- est_assoc %>%
-  ggplot(aes(x = mean, xmin = lower, xmax = upper, y = predictor, color = outcome, group = outcome)) +
-  facet_wrap(~ what, ncol = 2) +
-  geom_errorbar(width = .25, position = position_dodge(width = .5)) +
-  geom_point(shape = 23, position = position_dodge(width = .5), fill = "white") +
-  geom_vline(aes(xintercept = 1), linetype = "dotted", color = "red") +
-  scale_color_manual(values = wes_palette("AsteroidCity2")[1:3], breaks = outcomes) +
-  scale_x_continuous(breaks = pretty_breaks(n = 4), limits = c(0, NA), expand = c(0, 0)) +
+  ggplot(aes(
+    x = mean,
+    xmin = lower,
+    xmax = upper,
+    y = predictor,
+    color = outcome,
+    group = outcome
+  )) +
+  facet_wrap(~what, ncol = 2) +
+  geom_errorbar(
+    width = .25,
+    position = position_dodge(width = .5)
+  ) +
+  geom_point(
+    shape = 23,
+    position = position_dodge(width = .5),
+    fill = "white"
+  ) +
+  geom_vline(
+    aes(xintercept = 1),
+    linetype = "dotted", color = "red"
+  ) +
+  scale_color_manual(
+    values = wes_palette("AsteroidCity2")[1:3],
+    breaks = outcomes
+  ) +
+  scale_x_continuous(
+    breaks = pretty_breaks(n = 4),
+    limits = c(0, NA),
+    expand = c(0, 0)
+  ) +
   labs(x = "Odds ratio") +
-  theme_custom() + 
-  theme(axis.title.y = element_blank(), 
-        legend.position = "bottom", legend.title = element_blank(), 
-        legend.margin = margin(t=0, r=3, b=3, l=3),
-        legend.key.height = unit(0.15, "cm"),
-        legend.key.width = unit(0.5, "cm"),
-        strip.text.x = element_text(face = 2, margin = margin(b = 5, t = 10))) +
+  theme_custom() +
+  theme(
+    axis.title.y = element_blank(),
+    legend.position = "bottom", legend.title = element_blank(),
+    legend.margin = margin(t = 0, r = 3, b = 3, l = 3),
+    legend.key.height = unit(0.15, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    strip.text.x = element_text(face = 2, margin = margin(b = 5, t = 10))
+  ) +
   guides(color = guide_legend(nrow = 1))
 
-pl_assoc
-
-save_plot(pl_assoc, pdf_file = "../results/association.pdf", w = 16, h = 12)
+save_plot(
+  pl_assoc,
+  pdf_file = "results/association.pdf",
+  w = 16, h = 12
+)
 ```
 
+## Sankey
 
-### Post treat
+### Patients with 2 visits
 
-```{r}
-df_comp_post <- df %>%
-  filter(event_time %in% c("Start treatment", "End treatment", "Post treatment (6mo)")) %>%
-  dplyr::select(record_id, event_time, constriction_sign, constriction, pericard_effusion, pericard_thickening) %>%
+```{r sankey-end}
+links <- df %>%
+  filter(event_time %in% c(
+    "Start",
+    "End"
+  )) %>%
   group_by(record_id) %>%
-  filter(sum(event_time == "Start treatment") == 1,
-         sum(event_time == "End treatment") == 1,
-         sum(event_time == "Post treatment (6mo)") == 1,
-         sum(event_time == "Start treatment") + sum(event_time == "End treatment") + sum(event_time == "Post treatment (6mo)") == 3) %>%
+  filter(n() == 2) %>%
+  ungroup() %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    pericard_effusion,
+    pericard_thickening,
+    constriction_sign
+  ) %>%
+  mutate(
+    across(
+      c(
+        pericard_effusion, pericard_thickening, constriction_sign
+      ),
+      as.character
+    ),
+    across(
+      c(pericard_effusion, pericard_thickening, constriction_sign),
+      ~ ifelse(is.na(.x), "Unknown", .x)
+    ),
+    across(
+      c(pericard_effusion, pericard_thickening, constriction_sign),
+      ~ factor(.x, levels = c("Yes", "No", "Unknown"))
+    )
+  ) %>%
+  melt(c("record_id", "event_time")) %>%
+  rename(outcome = variable) %>%
+  mutate(
+    value = factor(value, levels = c("Yes", "No", "Unknown")),
+    event_time = factor(
+      paste(event_time, "treatment"),
+      levels = c("Start treatment", "End treatment")
+    ),
+    outcome = factor(
+      outcome %>% fct_recode(
+        "Pericardial effusion" = "pericard_effusion",
+        "Pericardial thickening" = "pericard_thickening",
+        "Signs of constrictions" = "constriction_sign"
+      ),
+      levels = c(
+        "Pericardial effusion",
+        "Pericardial thickening",
+        "Signs of constrictions"
+      )
+    )
+  ) %>%
+  group_by(outcome, value, event_time) %>%
+  mutate(n = n()) %>%
   ungroup()
 
+links %>%
+  dplyr::select(-n) %>%
+  dcast(record_id + outcome ~ event_time, value.var = "value") %>%
+  group_by(outcome, `Start treatment`, `End treatment`) %>%
+  summarize(n = n()) %>%
+  ungroup()
 
-df_comp_post_sub <- df_comp_post %>%
-  melt(c("record_id", "event_time")) %>%
-  group_by(record_id, variable) %>%
-  mutate(both_available = sum(!is.na(value))) %>%
-  ungroup() %>%
-  filter(both_available == 3) 
-
-post_pl <- df_comp_post_sub %>%
-  mutate(event_time = gsub(" (6mo)", "", event_time, fixed = T),
-         event_time = gsub(" treatment", "", event_time),
-         event_time = factor(event_time, levels = c("Start", "End", "Post")),
-         variable = ifelse(variable == "pericard_thickening", "Pericardial thickening", 
-                           ifelse(variable == "pericard_effusion", "Pericardial effusion", "Signs of constrictions")), 
-         variable = factor(variable, levels = c("Pericardial effusion", "Pericardial thickening", "Signs of constrictions")),
-         value = factor(value, levels = c("Yes", "No")),
-         record_id = factor(record_id, levels = as.character(sort(unique(as.numeric(record_id)))))) %>%
-  ggplot(aes(x = event_time, y = variable, fill = value)) +
-  geom_tile() +
-  facet_wrap(~ record_id) +
-  labs(x = "Treatment status", fill = "") +
+flow_pl <- links %>%
+  ggplot(aes(
+    x = event_time,
+    stratum = value,
+    alluvium = record_id,
+    fill = value,
+    label = value
+  )) +
+  facet_wrap(~outcome, nrow = 1) +
+  geom_flow(stat = "alluvium", lode.guidance = "rightleft") +
+  geom_stratum() +
+  geom_text(
+    stat = "stratum",
+    aes(label = after_stat(count)),
+    size = 8 / cm(1)
+  ) +
+  scale_fill_manual(values = wes_palette("Moonrise2")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
+  scale_x_discrete(labels = c("Start", "End")) +
+  labs(x = "Treatment", title = "a") +
   theme_custom() +
-  theme(axis.title.y = element_blank(),
-        legend.position = "bottom",
-        legend.key.width = unit(1, "cm"))
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    axis.title.y = element_blank()
+  )
 
-save_plot(post_pl, pdf_file = "../results/start-end-post-treatment.pdf", w = 16, h = 10)
+save_plot(
+  flow_pl,
+  pdf_file = "results/sankey.pdf",
+  w = 16, h = 10
+)
 ```
 
-### Sankey
+### Patients with 3 visits
 
-```{r}
-df_sankey <- df %>%
-  dplyr::select(event_time, pericard_effusion, pericard_thickening, constriction_sign) %>%
-  mutate(across(c(pericard_effusion, pericard_thickening, constriction_sign), as.character),
-         across(c(pericard_effusion, pericard_thickening, constriction_sign), ~ tolower(ifelse(is.na(.x), "Unknown", .x))),
-         across(c(pericard_effusion, pericard_thickening, constriction_sign), ~ factor(.x, levels = c("yes", "no", "unknown")))) %>%
-  reshape2::melt("event_time") %>%
-  reshape2::dcast(event_time + variable ~ value) %>%
-  mutate(event_time = gsub(" treatment", " treat.", event_time),
-         event_time = tolower(event_time),
-         event_time = factor(ifelse(grepl("post", event_time), "post treat.", event_time), levels = c("start treat.", "end treat.", "post treat.")),
-         variable = recode(variable, "pericard_effusion" = "Pericard. Eff.", "pericard_thickening" = "Pericard. thick.", "pericardial_calc" = "Pericard. calc.",
-                          "constriction_sign" = "Signs of constr.", "constriction" = "Def. constr.")) %>%
+```{r sankey-post}
+links_post <- df %>%
+  filter(event_time %in% c(
+    "Start",
+    "End",
+    "Post"
+  )) %>%
+  group_by(record_id) %>%
+  filter(n() == 3) %>%
+  ungroup() %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    pericard_effusion,
+    pericard_thickening,
+    constriction_sign
+  ) %>%
+  mutate(
+    across(
+      c(
+        pericard_effusion, pericard_thickening, constriction_sign
+      ),
+      as.character
+    ),
+    across(
+      c(pericard_effusion, pericard_thickening, constriction_sign),
+      ~ ifelse(is.na(.x), "Unknown", .x)
+    ),
+    across(
+      c(pericard_effusion, pericard_thickening, constriction_sign),
+      ~ factor(.x, levels = c("Yes", "No", "Unknown"))
+    )
+  ) %>%
+  melt(c("record_id", "event_time")) %>%
   rename(outcome = variable) %>%
-  melt(c("outcome", "event_time")) %>%
-  rename(category = variable) %>%
-  mutate(variable = paste0(outcome, ": ", category, " (", event_time, ") = ", value)) %>%
-  arrange(outcome, event_time) %>%
-  filter(value > 0)
- 
-# A connection data frame is a list of flows with intensity for each flow
-links <- rbind(
-  df_sankey %>%
-    filter(event_time == "start treat.") %>%
-    dplyr::select(outcome, variable) %>%
-    rename(source = variable) %>%
-    left_join(df_sankey %>%
-                filter(event_time == "end treat.") %>%
-                dplyr::select(outcome, value, variable) %>%
-                rename(target = variable),
-              by = "outcome"),
-  df_sankey %>%
-    filter(event_time == "end treat.") %>%
-    dplyr::select(outcome, variable) %>%
-    rename(source = variable) %>%
-    left_join(df_sankey %>%
-                filter(event_time == "post treat.") %>%
-                dplyr::select(outcome, value, variable) %>%
-                rename(target = variable),
-              by = "outcome"))
- 
-# From these flows we need to create a node data frame: it lists every entities involved in the flow
-nodes <- data.frame(
-  name=c(as.character(links$source), as.character(links$target)) %>% unique()
+  mutate(
+    value = factor(value, levels = c("Yes", "No", "Unknown")),
+    event_time = factor(
+      paste(event_time, "treatment"),
+      levels = c("Start treatment", "End treatment", "Post treatment")
+    ),
+    outcome = factor(
+      outcome %>% fct_recode(
+        "Pericardial effusion" = "pericard_effusion",
+        "Pericardial thickening" = "pericard_thickening",
+        "Signs of constrictions" = "constriction_sign"
+      ),
+      levels = c(
+        "Pericardial effusion",
+        "Pericardial thickening",
+        "Signs of constrictions"
+      )
+    )
+  ) %>%
+  group_by(outcome, value, event_time) %>%
+  mutate(n = n()) %>%
+  ungroup()
+
+links_post %>%
+  dplyr::select(-n) %>%
+  dcast(record_id + outcome ~ event_time, value.var = "value") %>%
+  group_by(outcome, `Start treatment`, `Post treatment`) %>%
+  summarize(n = n()) %>%
+  ungroup()
+
+flow_post_pl <- links_post %>%
+  ggplot(aes(
+    x = event_time,
+    stratum = value,
+    alluvium = record_id,
+    fill = value,
+    label = value
+  )) +
+  facet_wrap(~outcome, nrow = 1) +
+  geom_flow(stat = "alluvium", lode.guidance = "rightleft") +
+  geom_stratum() +
+  geom_text(
+    stat = "stratum",
+    aes(label = after_stat(count)),
+    size = 8 / cm(1)
+  ) +
+  scale_fill_manual(values = wes_palette("Moonrise2")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
+  scale_x_discrete(labels = c("Start", "End", "Post")) +
+  labs(x = "Treatment", title = "b") +
+  theme_custom() +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    axis.title.y = element_blank()
+  )
+
+save_plot(
+  flow_post_pl,
+  pdf_file = "results/sankey-post.pdf",
+  w = 16, h = 10
 )
-nodes$node_group <- gsub("Pericard. ", "", nodes$name)
- 
-# With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
-links$IDsource <- match(links$source, nodes$name)-1 
-links$IDtarget <- match(links$target, nodes$name)-1
- 
-# Make the Network
-colors <- paste(wes_palette("AsteroidCity2")[1:3], collapse = '", "')
-colorJS <- paste('d3.scaleOrdinal(["', colors, '"])')
-sankey_pl <- sankeyNetwork(Links = links, Nodes = nodes,
-              Source = "IDsource", Target = "IDtarget",
-              Value = "value", NodeID = "name", NodeGroup = "node_group",
-              colourScale = colorJS,
-              fontSize = 10,
-              sinksRight=FALSE)
-
-sankey_pl
-
-# save
-saveNetwork(sankey_pl, "../results/sankey.html")
-webshot::webshot("../results/sankey.html","../results/sankey.png", vwidth = 900, vheight = 600)
 ```
