@@ -476,7 +476,210 @@ write.table(
 )
 ```
 
-## Pericardial pathologies
+## Sankey
+
+### Patients with 2 visits
+
+```{r sankey-end}
+links <- df %>%
+  filter(event_time %in% c(
+    "Start",
+    "End"
+  )) %>%
+  group_by(record_id) %>%
+  filter(n() == 2) %>%
+  ungroup() %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    pericard_effusion,
+    pericard_thickening,
+    constriction_sign
+  ) %>%
+  mutate(
+    across(
+      c(
+        pericard_effusion, pericard_thickening, constriction_sign
+      ),
+      as.character
+    ),
+    across(
+      c(pericard_effusion, pericard_thickening, constriction_sign),
+      ~ ifelse(is.na(.x), "Unknown", .x)
+    ),
+    across(
+      c(pericard_effusion, pericard_thickening, constriction_sign),
+      ~ factor(.x, levels = c("Yes", "No", "Unknown"))
+    )
+  ) %>%
+  melt(c("record_id", "event_time")) %>%
+  rename(outcome = variable) %>%
+  mutate(
+    value = factor(value, levels = c("Yes", "No", "Unknown")),
+    event_time = factor(
+      paste(event_time, "treatment"),
+      levels = c("Start treatment", "End treatment")
+    ),
+    outcome = factor(
+      outcome %>% fct_recode(
+        "Pericardial effusion" = "pericard_effusion",
+        "Pericardial thickening" = "pericard_thickening",
+        "Signs of constrictions" = "constriction_sign"
+      ),
+      levels = c(
+        "Pericardial effusion",
+        "Pericardial thickening",
+        "Signs of constrictions"
+      )
+    )
+  ) %>%
+  group_by(outcome, value, event_time) %>%
+  mutate(n = n()) %>%
+  ungroup()
+
+links %>%
+  dplyr::select(-n) %>%
+  dcast(record_id + outcome ~ event_time, value.var = "value") %>%
+  group_by(outcome, `Start treatment`, `End treatment`) %>%
+  summarize(n = n()) %>%
+  ungroup()
+
+flow_pl <- links %>%
+  ggplot(aes(
+    x = event_time,
+    stratum = value,
+    alluvium = record_id,
+    fill = value,
+    label = value
+  )) +
+  facet_wrap(~outcome, nrow = 1) +
+  geom_flow(stat = "alluvium", lode.guidance = "rightleft") +
+  geom_stratum() +
+  geom_text(
+    stat = "stratum",
+    aes(label = after_stat(count)),
+    size = 8 / cm(1)
+  ) +
+  scale_fill_manual(values = wes_palette("Moonrise2")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
+  scale_x_discrete(labels = c("Start", "End")) +
+  labs(x = "Treatment", title = "a") +
+  theme_custom() +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    axis.title.y = element_blank()
+  )
+
+save_plot(
+  flow_pl,
+  pdf_file = "results/sankey.pdf",
+  w = 16, h = 10
+)
+```
+
+### Patients with 3 visits
+
+```{r sankey-post}
+links_post <- df %>%
+  filter(event_time %in% c(
+    "Start",
+    "End",
+    "Post"
+  )) %>%
+  group_by(record_id) %>%
+  filter(n() == 3) %>%
+  ungroup() %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    pericard_effusion,
+    pericard_thickening,
+    constriction_sign
+  ) %>%
+  mutate(
+    across(
+      c(
+        pericard_effusion, pericard_thickening, constriction_sign
+      ),
+      as.character
+    ),
+    across(
+      c(pericard_effusion, pericard_thickening, constriction_sign),
+      ~ ifelse(is.na(.x), "Unknown", .x)
+    ),
+    across(
+      c(pericard_effusion, pericard_thickening, constriction_sign),
+      ~ factor(.x, levels = c("Yes", "No", "Unknown"))
+    )
+  ) %>%
+  melt(c("record_id", "event_time")) %>%
+  rename(outcome = variable) %>%
+  mutate(
+    value = factor(value, levels = c("Yes", "No", "Unknown")),
+    event_time = factor(
+      paste(event_time, "treatment"),
+      levels = c("Start treatment", "End treatment", "Post treatment")
+    ),
+    outcome = factor(
+      outcome %>% fct_recode(
+        "Pericardial effusion" = "pericard_effusion",
+        "Pericardial thickening" = "pericard_thickening",
+        "Signs of constrictions" = "constriction_sign"
+      ),
+      levels = c(
+        "Pericardial effusion",
+        "Pericardial thickening",
+        "Signs of constrictions"
+      )
+    )
+  ) %>%
+  group_by(outcome, value, event_time) %>%
+  mutate(n = n()) %>%
+  ungroup()
+
+links_post %>%
+  dplyr::select(-n) %>%
+  dcast(record_id + outcome ~ event_time, value.var = "value") %>%
+  group_by(outcome, `Start treatment`, `Post treatment`) %>%
+  summarize(n = n()) %>%
+  ungroup()
+
+flow_post_pl <- links_post %>%
+  ggplot(aes(
+    x = event_time,
+    stratum = value,
+    alluvium = record_id,
+    fill = value,
+    label = value
+  )) +
+  facet_wrap(~outcome, nrow = 1) +
+  geom_flow(stat = "alluvium", lode.guidance = "rightleft") +
+  geom_stratum() +
+  geom_text(
+    stat = "stratum",
+    aes(label = after_stat(count)),
+    size = 8 / cm(1)
+  ) +
+  scale_fill_manual(values = wes_palette("Moonrise2")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
+  scale_x_discrete(labels = c("Start", "End", "Post")) +
+  labs(x = "Treatment", title = "b") +
+  theme_custom() +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "top",
+    axis.title.y = element_blank()
+  )
+
+save_plot(
+  flow_post_pl,
+  pdf_file = "results/sankey-post.pdf",
+  w = 16, h = 10
+)
+```
+
+## Pericardial abnormalities
 
 ```{r pathologies-proportions}
 pericard_pl <- df %>%
@@ -1153,208 +1356,5 @@ save_plot(
   pl_assoc,
   pdf_file = "results/association.pdf",
   w = 16, h = 12
-)
-```
-
-## Sankey
-
-### Patients with 2 visits
-
-```{r sankey-end}
-links <- df %>%
-  filter(event_time %in% c(
-    "Start",
-    "End"
-  )) %>%
-  group_by(record_id) %>%
-  filter(n() == 2) %>%
-  ungroup() %>%
-  dplyr::select(
-    record_id,
-    event_time,
-    pericard_effusion,
-    pericard_thickening,
-    constriction_sign
-  ) %>%
-  mutate(
-    across(
-      c(
-        pericard_effusion, pericard_thickening, constriction_sign
-      ),
-      as.character
-    ),
-    across(
-      c(pericard_effusion, pericard_thickening, constriction_sign),
-      ~ ifelse(is.na(.x), "Unknown", .x)
-    ),
-    across(
-      c(pericard_effusion, pericard_thickening, constriction_sign),
-      ~ factor(.x, levels = c("Yes", "No", "Unknown"))
-    )
-  ) %>%
-  melt(c("record_id", "event_time")) %>%
-  rename(outcome = variable) %>%
-  mutate(
-    value = factor(value, levels = c("Yes", "No", "Unknown")),
-    event_time = factor(
-      paste(event_time, "treatment"),
-      levels = c("Start treatment", "End treatment")
-    ),
-    outcome = factor(
-      outcome %>% fct_recode(
-        "Pericardial effusion" = "pericard_effusion",
-        "Pericardial thickening" = "pericard_thickening",
-        "Signs of constrictions" = "constriction_sign"
-      ),
-      levels = c(
-        "Pericardial effusion",
-        "Pericardial thickening",
-        "Signs of constrictions"
-      )
-    )
-  ) %>%
-  group_by(outcome, value, event_time) %>%
-  mutate(n = n()) %>%
-  ungroup()
-
-links %>%
-  dplyr::select(-n) %>%
-  dcast(record_id + outcome ~ event_time, value.var = "value") %>%
-  group_by(outcome, `Start treatment`, `End treatment`) %>%
-  summarize(n = n()) %>%
-  ungroup()
-
-flow_pl <- links %>%
-  ggplot(aes(
-    x = event_time,
-    stratum = value,
-    alluvium = record_id,
-    fill = value,
-    label = value
-  )) +
-  facet_wrap(~outcome, nrow = 1) +
-  geom_flow(stat = "alluvium", lode.guidance = "rightleft") +
-  geom_stratum() +
-  geom_text(
-    stat = "stratum",
-    aes(label = after_stat(count)),
-    size = 8 / cm(1)
-  ) +
-  scale_fill_manual(values = wes_palette("Moonrise2")) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
-  scale_x_discrete(labels = c("Start", "End")) +
-  labs(x = "Treatment", title = "a") +
-  theme_custom() +
-  theme(
-    legend.title = element_blank(),
-    legend.position = "top",
-    axis.title.y = element_blank()
-  )
-
-save_plot(
-  flow_pl,
-  pdf_file = "results/sankey.pdf",
-  w = 16, h = 10
-)
-```
-
-### Patients with 3 visits
-
-```{r sankey-post}
-links_post <- df %>%
-  filter(event_time %in% c(
-    "Start",
-    "End",
-    "Post"
-  )) %>%
-  group_by(record_id) %>%
-  filter(n() == 3) %>%
-  ungroup() %>%
-  dplyr::select(
-    record_id,
-    event_time,
-    pericard_effusion,
-    pericard_thickening,
-    constriction_sign
-  ) %>%
-  mutate(
-    across(
-      c(
-        pericard_effusion, pericard_thickening, constriction_sign
-      ),
-      as.character
-    ),
-    across(
-      c(pericard_effusion, pericard_thickening, constriction_sign),
-      ~ ifelse(is.na(.x), "Unknown", .x)
-    ),
-    across(
-      c(pericard_effusion, pericard_thickening, constriction_sign),
-      ~ factor(.x, levels = c("Yes", "No", "Unknown"))
-    )
-  ) %>%
-  melt(c("record_id", "event_time")) %>%
-  rename(outcome = variable) %>%
-  mutate(
-    value = factor(value, levels = c("Yes", "No", "Unknown")),
-    event_time = factor(
-      paste(event_time, "treatment"),
-      levels = c("Start treatment", "End treatment", "Post treatment")
-    ),
-    outcome = factor(
-      outcome %>% fct_recode(
-        "Pericardial effusion" = "pericard_effusion",
-        "Pericardial thickening" = "pericard_thickening",
-        "Signs of constrictions" = "constriction_sign"
-      ),
-      levels = c(
-        "Pericardial effusion",
-        "Pericardial thickening",
-        "Signs of constrictions"
-      )
-    )
-  ) %>%
-  group_by(outcome, value, event_time) %>%
-  mutate(n = n()) %>%
-  ungroup()
-
-links_post %>%
-  dplyr::select(-n) %>%
-  dcast(record_id + outcome ~ event_time, value.var = "value") %>%
-  group_by(outcome, `Start treatment`, `Post treatment`) %>%
-  summarize(n = n()) %>%
-  ungroup()
-
-flow_post_pl <- links_post %>%
-  ggplot(aes(
-    x = event_time,
-    stratum = value,
-    alluvium = record_id,
-    fill = value,
-    label = value
-  )) +
-  facet_wrap(~outcome, nrow = 1) +
-  geom_flow(stat = "alluvium", lode.guidance = "rightleft") +
-  geom_stratum() +
-  geom_text(
-    stat = "stratum",
-    aes(label = after_stat(count)),
-    size = 8 / cm(1)
-  ) +
-  scale_fill_manual(values = wes_palette("Moonrise2")) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
-  scale_x_discrete(labels = c("Start", "End", "Post")) +
-  labs(x = "Treatment", title = "b") +
-  theme_custom() +
-  theme(
-    legend.title = element_blank(),
-    legend.position = "top",
-    axis.title.y = element_blank()
-  )
-
-save_plot(
-  flow_post_pl,
-  pdf_file = "results/sankey-post.pdf",
-  w = 16, h = 10
 )
 ```
