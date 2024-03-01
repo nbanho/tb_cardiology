@@ -28,7 +28,10 @@ source("utils/tex.r")
 ## Data
 
 ```{r data}
-df <- readRDS("data-clean/echo.rds")
+df <- readRDS("data-clean/echo.rds") %>%
+  group_by(record_id) %>%
+  filter(any(event_time == "Start")) %>%
+  ungroup()
 
 all_outcomes <- c(
   "pericard_effusion" = "Pericardial\neffusion",
@@ -476,119 +479,12 @@ write.table(
 )
 ```
 
-## Sankey
-
-### Patients with 2 visits
-
-```{r sankey-end}
-links <- df %>%
-  filter(event_time %in% c(
-    "Start",
-    "End"
-  )) %>%
-  group_by(record_id) %>%
-  filter(n() == 2) %>%
-  ungroup() %>%
-  dplyr::select(
-    record_id,
-    event_time,
-    pericard_effusion,
-    pericard_thickening,
-    constriction_sign
-  ) %>%
-  mutate(
-    across(
-      c(
-        pericard_effusion, pericard_thickening, constriction_sign
-      ),
-      as.character
-    ),
-    across(
-      c(pericard_effusion, pericard_thickening, constriction_sign),
-      ~ ifelse(is.na(.x), "Unknown", .x)
-    ),
-    across(
-      c(pericard_effusion, pericard_thickening, constriction_sign),
-      ~ factor(.x, levels = c("Yes", "No", "Unknown"))
-    )
-  ) %>%
-  melt(c("record_id", "event_time")) %>%
-  rename(outcome = variable) %>%
-  mutate(
-    value = factor(value, levels = c("Yes", "No", "Unknown")),
-    event_time = factor(
-      paste(event_time, "treatment"),
-      levels = c("Start treatment", "End treatment")
-    ),
-    outcome = factor(
-      outcome %>% fct_recode(
-        "Pericardial effusion" = "pericard_effusion",
-        "Pericardial thickening" = "pericard_thickening",
-        "Signs of constrictions" = "constriction_sign"
-      ),
-      levels = c(
-        "Pericardial effusion",
-        "Pericardial thickening",
-        "Signs of constrictions"
-      )
-    )
-  ) %>%
-  group_by(outcome, value, event_time) %>%
-  mutate(n = n()) %>%
-  ungroup()
-
-links %>%
-  dplyr::select(-n) %>%
-  dcast(record_id + outcome ~ event_time, value.var = "value") %>%
-  group_by(outcome, `Start treatment`, `End treatment`) %>%
-  summarize(n = n()) %>%
-  ungroup()
-
-flow_pl <- links %>%
-  ggplot(aes(
-    x = event_time,
-    stratum = value,
-    alluvium = record_id,
-    fill = value,
-    label = value
-  )) +
-  facet_wrap(~outcome, nrow = 1) +
-  geom_flow(stat = "alluvium", lode.guidance = "rightleft") +
-  geom_stratum() +
-  geom_text(
-    stat = "stratum",
-    aes(label = after_stat(count)),
-    size = 8 / cm(1)
-  ) +
-  scale_fill_manual(values = wes_palette("Moonrise2")) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
-  scale_x_discrete(labels = c("Start", "End")) +
-  labs(x = "Treatment", title = "a") +
-  theme_custom() +
-  theme(
-    legend.title = element_blank(),
-    legend.position = "top",
-    axis.title.y = element_blank()
-  )
-
-save_plot(
-  flow_pl,
-  pdf_file = "results/sankey.pdf",
-  w = 16, h = 10
-)
-```
-
-### Patients with 3 visits
+## Sankey post treatment
 
 ```{r sankey-post}
 links_post <- df %>%
-  filter(event_time %in% c(
-    "Start",
-    "End",
-    "Post"
-  )) %>%
   group_by(record_id) %>%
-  filter(n() == 3) %>%
+  filter(any(event_time == "Post")) %>%
   ungroup() %>%
   dplyr::select(
     record_id,
@@ -606,21 +502,27 @@ links_post <- df %>%
     ),
     across(
       c(pericard_effusion, pericard_thickening, constriction_sign),
-      ~ ifelse(is.na(.x), "Unknown", .x)
+      ~ ifelse(is.na(.x), "Not determinable", .x)
     ),
+    event_time = factor(
+      event_time,
+      levels = c("Start", "End", "Post")
+    )
+  ) %>%
+  group_by(record_id) %>%
+  complete(event_time = levels(event_time)) %>%
+  ungroup() %>%
+  mutate(
     across(
-      c(pericard_effusion, pericard_thickening, constriction_sign),
-      ~ factor(.x, levels = c("Yes", "No", "Unknown"))
+      c(
+        pericard_effusion, pericard_thickening, constriction_sign
+      ),
+      ~ ifelse(is.na(.x), "Missing follow-up visit", .x)
     )
   ) %>%
   melt(c("record_id", "event_time")) %>%
   rename(outcome = variable) %>%
   mutate(
-    value = factor(value, levels = c("Yes", "No", "Unknown")),
-    event_time = factor(
-      paste(event_time, "treatment"),
-      levels = c("Start treatment", "End treatment", "Post treatment")
-    ),
     outcome = factor(
       outcome %>% fct_recode(
         "Pericardial effusion" = "pericard_effusion",
@@ -632,6 +534,16 @@ links_post <- df %>%
         "Pericardial thickening",
         "Signs of constrictions"
       )
+    ),
+    value = factor(value, levels = c(
+      "Yes",
+      "Not determinable",
+      "Missing follow-up visit",
+      "No"
+    )),
+    event_time = factor(
+      event_time,
+      levels = c("Start", "End", "Post")
     )
   ) %>%
   group_by(outcome, value, event_time) %>%
@@ -641,7 +553,7 @@ links_post <- df %>%
 links_post %>%
   dplyr::select(-n) %>%
   dcast(record_id + outcome ~ event_time, value.var = "value") %>%
-  group_by(outcome, `Start treatment`, `Post treatment`) %>%
+  group_by(outcome, `Start`, `Post`) %>%
   summarize(n = n()) %>%
   ungroup()
 
@@ -661,10 +573,17 @@ flow_post_pl <- links_post %>%
     aes(label = after_stat(count)),
     size = 8 / cm(1)
   ) +
-  scale_fill_manual(values = wes_palette("Moonrise2")) +
+  scale_fill_manual(
+    values = c(
+      wes_palette("FrenchDispatch")[2],
+      wes_palette("FrenchDispatch")[3],
+      "grey50",
+      wes_palette("FrenchDispatch")[4]
+    ),
+    breaks = c("Yes", "Not determinable", "Missing follow-up visit", "No")
+  ) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.01))) +
-  scale_x_discrete(labels = c("Start", "End", "Post")) +
-  labs(x = "Treatment", title = "b") +
+  labs(x = "Treatment") +
   theme_custom() +
   theme(
     legend.title = element_blank(),
@@ -696,8 +615,8 @@ pericard_pl <- df %>%
   melt("event_time") %>%
   mutate(
     value = as.character(value),
-    value = ifelse(is.na(value), "Unknown", value),
-    value = factor(value, levels = c("No", "Unknown", "Yes"))
+    value = ifelse(is.na(value), "Not determinable", value),
+    value = factor(value, levels = c("No", "Not determinable", "Yes"))
   ) %>%
   group_by(event_time, variable, value) %>%
   summarize(n = n()) %>%
@@ -722,7 +641,7 @@ pericard_pl <- df %>%
   scale_y_continuous(expand = c(0, 0)) +
   scale_fill_manual(
     values = wes_palette("FrenchDispatch")[2:4],
-    breaks = c("Yes", "Unknown", "No")
+    breaks = c("Yes", "Not determinable", "No")
   ) +
   theme_custom() +
   theme(
@@ -1035,6 +954,9 @@ df_comp_long_fup <- do.call(rbind, df_comp_fup) %>%
   ) %>%
   arrange(variable)
 
+df_comp_long_fup
+p_val_txt_fup
+
 p_val_y_pos_fup <- df_comp_long_fup %>%
   group_by(variable) %>%
   summarize(
@@ -1147,7 +1069,7 @@ for (out in 1:length(outcomes)) {
       chains = 1,
       iter = 1000,
       prior = prior_string(
-        "student_t(1, 0, .3)",
+        "normal(0, 1)",
         class = "b",
         coef = pr_coef
       )
@@ -1173,6 +1095,9 @@ for (out in 1:length(outcomes)) {
     est_assoc_base <- rbind(est_assoc_base, assoc)
   }
 }
+
+est_assoc_base %>%
+  mutate_if(is.numeric, round, 2)
 ```
 
 ### Improvement
@@ -1255,7 +1180,7 @@ for (out in 1:length(outcomes)) {
       chains = 1,
       iter = 1000,
       prior = prior_string(
-        "student_t(1, 0, .3)",
+        "normal(0, 1)",
         class = "b",
         coef = pr_coef
       )
@@ -1307,6 +1232,12 @@ est_assoc <- rbind(
     )
   )
 
+est_assoc_imp %>%
+  mutate_if(is.numeric, round, 2)
+```
+
+
+```{r}
 # plot
 pl_assoc <- est_assoc %>%
   ggplot(aes(
