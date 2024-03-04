@@ -62,7 +62,8 @@ echo <- read.csv("data-raw/Z519TBSRNEchoStudy_DATA_2024-02-19_1650.csv") %>%
               across(c(constriction, constriction_sign, pericard_effusion, pericard_thickening, pericardial_calc), ~ factor(.x, levels = c("No", "Yes"))),
               event_time = ifelse(event_time == "baseline_arm_1", "Start", ifelse(event_time == "end_of_treatment_arm_1", "End", "Post")),
               obesity = ifelse(bmi > 30, "Yes", "No"),
-              across(c(obesity), ~ factor(ifelse(is.na(.x), "Unknown", ifelse(.x == 1, "Yes", "No")), levels = c("Yes", "No", "Unknown"))),
+              underweight = ifelse(bmi < 18, "Yes", "No"),
+              across(c(obesity, underweight), ~ factor(ifelse(is.na(.x), "Unknown", .x), levels = c("Yes", "No", "Unknown"))),
               across(
                      c(
                             lv_dilatation, abnormal_lv_geometry, aortic_dilation, asc_aorta_dilation,
@@ -213,11 +214,18 @@ missing_base <- prep_df %>%
               pericard_effusion,
               pericard_thickening,
               pericardial_calc
-       ) 
+       )
 
 n_distinct(missing_base$record_id)
 
 write.csv(missing_base, "results/missing_baseline.csv", row.names = FALSE)
+
+missing_with_base <- missing_base %>%
+       left_join(
+              read.csv("data-raw/base_echo_Guy-Mar-03.csv") %>%
+                     mutate(event_time = "Start"),
+              by = "record_id"
+       )
 
 # baseline echo Zambia
 prep_df %>%
