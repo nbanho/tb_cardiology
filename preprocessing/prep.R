@@ -33,6 +33,7 @@ echo <- read.csv("data-raw/Z519TBSRNEchoStudy_DATA_2024-02-19_1650.csv") %>%
               lvef_simpson,
               lv_systolic_dysfunction,
               diastolic_dysfunction_new,
+              typ_diastolic_dysfunction_new,
               lv_dilatation,
               la_dilation,
               rv_dilation,
@@ -75,7 +76,11 @@ echo <- read.csv("data-raw/Z519TBSRNEchoStudy_DATA_2024-02-19_1650.csv") %>%
               ),
               type_lv_geometry_anomaly = factor(ifelse(type_lv_geometry_anomaly == 1, "concentric remodelling", ifelse(type_lv_geometry_anomaly == 2, "concentric hypertrophy", "eccentric hypertrophy")),
                      levels = c("concentric remodelling", "concentric hypertrophy", "eccentric hypertrophy")
-              )
+              ),
+              typ_diastolic_dysfunction_new = factor(ifelse(
+                     typ_diastolic_dysfunction_new == 1, "Grade I",
+                     ifelse(typ_diastolic_dysfunction_new == 2, "Grade II", "Undefined dysfunction")
+              ))
        )
 
 # filter missing
@@ -94,7 +99,6 @@ pat <- read.csv("data-raw/1734TuberculosisPati_DATA_2024-02-15_1012.csv") %>%
               redcap_event_name,
               age,
               dem_sex,
-              death_yn,
               xr_cavitation_yn,
               mb_xpert_t1_rifresist,
               mb_drug_rif,
@@ -198,6 +202,18 @@ prep_df <- left_join(echo_filt, pat, by = "record_id") %>%
        )
 sprintf("Missing gender: %i", nrow(filter(prep_df, is.na(sex))))
 
+# add deaths
+
+pat_death <- read.csv("data-raw/1734TuberculosisPati_DATA_2024-02-15_1012.csv") %>%
+       dplyr::select(record_id, death_yn) %>%
+       mutate(death_yn = ifelse(is.na(death_yn), 0, death_yn)) %>%
+       group_by(record_id) %>%
+       summarize(death_yn = max(death_yn, na.rm = TRUE)) %>%
+       ungroup() %>%
+       mutate(record_id = as.integer(gsub("-", "", record_id)))
+
+prep_df <- left_join(prep_df, pat_death, by = "record_id")
+
 sprintf("Number of patients dying records: %s", nrow(filter(prep_df, death_yn == 1)))
 
 # missing baseline
@@ -220,27 +236,19 @@ n_distinct(missing_base$record_id)
 
 write.csv(missing_base, "results/missing_baseline.csv", row.names = FALSE)
 
-missing_with_base <- missing_base %>%
+missing_base_guy <- read.csv("data-raw/base_echo_Guy-Mar-03.csv")
+
+rbind(missing_base, missing_base_guy) %>%
+       group_by(record_id) %>%
+       filter(n() > 1)
+
+missing_base_guy %>%
+       dplyr::select(record_id, site) %>%
        left_join(
-              read.csv("data-raw/base_echo_Guy-Mar-03.csv") %>%
-                     mutate(event_time = "Start"),
-              by = "record_id"
-       )
-
-# baseline echo Zambia
-prep_df %>%
-       filter(event_time == "Start" & site == "Zambia") %>%
-       dplyr::select(
-              record_id,
-              site,
-              event_time,
-              constriction,
-              constriction_sign,
-              pericard_effusion,
-              pericard_thickening,
-              pericardial_calc
+              prep_df %>% dplyr::select(record_id, site) %>% mutate(matched = TRUE),
+              by = c("record_id", "site")
        ) %>%
-       write.csv("results/base_echo.csv", row.names = FALSE)
+       filter(is.na(matched))
 
-# saave
+# save
 saveRDS(prep_df, file = "data-clean/echo.rds")

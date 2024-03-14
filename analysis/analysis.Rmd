@@ -229,6 +229,7 @@ echo_vars <- c(
   "LVEF (Simpson BP)" = "lvef_simpson",
   "LV systolic dysfunction" = "lv_systolic_dysfunction",
   "Diastolic dysfunction according to new guidelines" = "diastolic_dysfunction_new",
+  "   Type of dysfunction" = "typ_diastolic_dysfunction_new",
   "LV dilation" = "lv_dilatation",
   "LA dilation" = "la_dilation",
   "RV dilation" = "rv_dilation",
@@ -265,6 +266,7 @@ echo_digits <- c(
   "lvef_simpson" = 1,
   "lv_systolic_dysfunction" = NA,
   "diastolic_dysfunction_new" = NA,
+  "typ_diastolic_dysfunction_new" = NA,
   "lv_dilatation" = NA,
   "la_dilation" = NA,
   "rv_dilation" = NA,
@@ -660,6 +662,78 @@ save_plot(
 )
 ```
 
+## Any abnormality
+
+```{r any-abnormality}
+# all patients
+df %>%
+  filter(event_time %in% c("Start", "End")) %>%
+  rowwise() %>%
+  mutate(any_abnorm = any(c_across(names(all_outcomes)) == "Yes")) %>%
+  ungroup() %>%
+  group_by(event_time) %>%
+  summarize(
+    n = sum(any_abnorm, na.rm = TRUE),
+    N = n(),
+    p = n / N
+  ) %>%
+  ungroup() %>%
+  mutate(p = round(p * 100))
+
+# paired patients
+df %>%
+  filter(event_time %in% c("Start", "End")) %>%
+  group_by(record_id) %>%
+  filter(n() == 2) %>%
+  ungroup() %>%
+  rowwise() %>%
+  mutate(any_abnorm = any(c_across(names(all_outcomes)) == "Yes")) %>%
+  ungroup() %>%
+  group_by(event_time) %>%
+  summarize(
+    n = sum(any_abnorm, na.rm = TRUE),
+    N = n(),
+    p = n / N
+  ) %>%
+  ungroup() %>%
+  mutate(p = round(p * 100))
+
+# death patients
+death_comp <- df %>%
+  filter(event_time == "Start") %>%
+  rowwise() %>%
+  mutate(any_abnorm = any(c_across(names(all_outcomes)) == "Yes")) %>%
+  ungroup() %>%
+  group_by(death_yn) %>%
+  summarize(
+    n = sum(any_abnorm, na.rm = TRUE),
+    N = n(),
+    p = n / N
+  ) %>%
+  ungroup() %>%
+  mutate(p = round(p * 100))
+
+death_comp
+
+mod_comp <- brm(
+  n | trials(N) ~ death_yn,
+  family = binomial(),
+  data = death_comp,
+  chains = 1,
+  iter = 1000,
+  seed = 12345
+)
+
+mod_comp %>%
+  spread_draws(`b_death_yn`) %>%
+  mutate(or = exp(b_death_yn)) %>%
+  mean_qi(or)
+
+mod_comp %>%
+  spread_draws(`b_death_yn`) %>%
+  summarize(pp = 100 * sum(b_death_yn > 0) / n())
+```
+
 ## Imputation
 
 ```{r imputation}
@@ -834,11 +908,11 @@ p_val_y_pos <- df_comp_long %>%
 
 # plot
 pl_comp <- df_comp_long %>%
-  ggplot(aes(x = variable, pattern = event_time, y = p)) +
-  geom_bar_pattern(
-    stat = "identity", position = position_dodge(width = .66),
-    width = .5, fill = wes_palette("FrenchDispatch")[2],
-    pattern_density = .4, pattern_spacing = .03, pattern_color = "white"
+  ggplot(aes(x = variable, fill = event_time, y = p)) +
+  geom_bar(
+    stat = "identity",
+    position = position_dodge(width = .66),
+    width = .5
   ) +
   geom_text(
     aes(label = paste0(round(100 * p), "%")),
@@ -858,7 +932,7 @@ pl_comp <- df_comp_long %>%
     labels = scales::percent_format(suffix = "")
   ) +
   scale_x_discrete(labels = all_outcomes) +
-  scale_pattern_manual(values = c("none", "stripe")) +
+  scale_fill_manual(values = c(wes_palette("FrenchDispatch")[2], wes_palette("Moonrise3")[2])) +
   coord_cartesian(ylim = c(0, NA), clip = "off") +
   labs(y = "Proportion (%)", x = "Pericardial changes") +
   theme_custom(8) +
@@ -970,11 +1044,10 @@ p_val_y_pos_fup <- df_comp_long_fup %>%
 
 # plot
 pl_comp_fup <- df_comp_long_fup %>%
-  ggplot(aes(x = variable, pattern = event_time, y = p)) +
-  geom_bar_pattern(
+  ggplot(aes(x = variable, fill = event_time, y = p)) +
+  geom_bar(
     stat = "identity", position = position_dodge(width = .66),
-    width = .5, fill = wes_palette("FrenchDispatch")[2],
-    pattern_density = .4, pattern_spacing = .03, pattern_color = "white"
+    width = .5
   ) +
   geom_text(
     aes(label = paste0(round(100 * p), "%")),
@@ -994,7 +1067,7 @@ pl_comp_fup <- df_comp_long_fup %>%
     labels = scales::percent_format(suffix = "")
   ) +
   scale_x_discrete(labels = all_outcomes) +
-  scale_pattern_manual(values = c("none", "stripe")) +
+  scale_fill_manual(values = c(wes_palette("FrenchDispatch")[2], wes_palette("Moonrise3")[2])) +
   coord_cartesian(ylim = c(0, NA), clip = "off") +
   labs(y = "Proportion (%)", x = "Pericardial changes") +
   theme_custom(8) +
