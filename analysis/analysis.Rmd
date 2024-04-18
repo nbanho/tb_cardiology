@@ -20,6 +20,7 @@ library(rstanarm)
 library(brms)
 library(tidybayes)
 library(ggalluvial)
+library(mice)
 source("utils/plotting.r")
 source("utils/tex.r")
 ```
@@ -701,104 +702,27 @@ df %>%
 # death patients
 death_comp <- df %>%
   filter(event_time == "Start") %>%
-  rowwise() %>%
-  mutate(any_abnorm = any(c_across(names(all_outcomes)) == "Yes")) %>%
-  ungroup() %>%
-  group_by(death_yn) %>%
+  group_by(record_id) %>%
   summarize(
-    n = sum(any_abnorm, na.rm = TRUE),
-    N = n(),
-    p = n / N
+    any_abnorm = any(c_across(names(all_outcomes)) == "Yes", na.rm = TRUE),
+    death_yn = max(death_yn)
   ) %>%
   ungroup() %>%
-  mutate(p = round(p * 100))
-
-death_comp
-
-mod_comp <- brm(
-  n | trials(N) ~ death_yn,
-  family = binomial(),
-  data = death_comp,
-  chains = 1,
-  iter = 1000,
-  seed = 12345
-)
-
-mod_comp %>%
-  spread_draws(`b_death_yn`) %>%
-  mutate(or = exp(b_death_yn)) %>%
-  mean_qi(or)
-
-mod_comp %>%
-  spread_draws(`b_death_yn`) %>%
-  summarize(pp = 100 * sum(b_death_yn > 0) / n())
-```
-
-## Imputation
-
-```{r imputation}
-# subset primary outcomes
-df_imp <- df %>%
-  dplyr::select(
-    record_id,
-    event_time,
-    constriction_sign,
-    constriction,
-    pericard_effusion,
-    pericard_thickening,
-    pericardial_calc
-  ) %>%
   mutate(
-    across(c(
-      constriction_sign,
-      constriction,
-      pericard_effusion,
-      pericard_thickening,
-      pericardial_calc
-    ), ~ ifelse(.x == "Yes", 1, 0))
-  ) %>%
-  melt(c("record_id", "event_time"))
-
-# proportion of yes / (yes + no)
-p_yes <- df_imp %>%
-  group_by(variable, event_time) %>%
-  summarize(
-    p_yes = sum(value, na.rm = TRUE) / sum(!is.na(value))
+    any_abnorm = ifelse(any_abnorm, 1, 0),
+    death_yn = ifelse(death_yn == 1, "Yes", "No"),
+    death_yn = factor(death_yn, levels = c("No", "Yes"))
   )
 
+table(death_comp$death_yn, death_comp$any_abnorm, useNA = "always")
 
-# impute data
-impute_bin <- function(k) {
-  df_imp_i <- df_imp
-  df_imp_i$value_imp <- NA
-  for (i in 1:nrow(df_imp)) {
-    if (is.na(df_imp_i$value[i])) {
-      p <- p_yes$p_yes[p_yes$variable == df_imp_i$variable[i] &
-        p_yes$event_time == df_imp_i$event_time[i]]
-      set.seed(k * 1000 + i)
-      df_imp_i$value_imp[i] <- sample(0:1, 1, prob = c(1 - p, p))
-    } else {
-      df_imp_i$value_imp[i] <- df_imp_i$value[i]
-    }
-  }
-  df_imp_i <- df_imp_i %>%
-    dplyr::select(-value) %>%
-    dcast(record_id + event_time ~ variable, value.var = "value_imp") %>%
-    left_join(df %>%
-      group_by(record_id) %>%
-      slice(1) %>%
-      ungroup() %>%
-      dplyr::select(
-        record_id, site,
-        age_cat25, sex,
-        clindiag, cavity,
-        hiv, tbd_pat_cat,
-        drugresistant
-      ), by = "record_id")
-  return(df_imp_i)
-}
+mod_comp <- glm(
+  any_abnorm ~ death_yn,
+  family = binomial(),
+  data = death_comp
+)
 
-df_imp_list <- lapply(1:100, impute_bin)
+summary(mod_comp)
 ```
 
 
@@ -807,86 +731,90 @@ df_imp_list <- lapply(1:100, impute_bin)
 ### All patients
 
 ```{r pericardial-changes}
-# prepare data
-df_comp <- lapply(df_imp_list, function(x) {
-  x %>%
-    filter(event_time %in% c("Start", "End")) %>%
-    dplyr::select(
-      record_id,
-      event_time,
+# subset primary outcomes
+df_sub <- df %>%
+  filter(event_time %in% c("Start", "End")) %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    constriction_sign,
+    constriction,
+    pericard_effusion,
+    pericard_thickening,
+    pericardial_calc,
+    site,
+    age_cat25, sex,
+    clindiag, cavity,
+    hiv, tbd_pat_cat,
+    drugresistant
+  ) %>%
+  mutate(
+    across(c(
       constriction_sign,
       constriction,
       pericard_effusion,
       pericard_thickening,
       pericardial_calc
-    ) %>%
-    melt(c("record_id", "event_time")) %>%
-    group_by(variable, event_time) %>%
-    summarize(
-      n = sum(value),
-      N = n(),
-      p = n / N,
-    ) %>%
-    ungroup() %>%
-    mutate(
-      event_time = factor(
-        event_time,
-        levels = c("Start", "End")
-      )
+    ), ~ ifelse(.x == "Yes", 1, 0)),
+    event_time = factor(
+      event_time,
+      levels = c("Start", "End")
     )
-})
+  )
+
+
+# impute data
+df_imp <- mice(
+  data = dplyr::select(df_sub, -record_id),
+  m = 100,
+  seed = 12345
+)
 
 # estimate models
 mod_comp <- list()
 for (out in names(all_outcomes)) {
-  df_comp_out <- lapply(df_comp, function(x) {
-    x %>%
-      filter(variable == out)
-  })
-  mod_comp[[out]] <- brm_multiple(
-    n | trials(N) ~ event_time,
-    family = binomial(),
-    data = df_comp_out,
-    chains = 1,
-    iter = 1000,
-    seed = 12345
+  mod_comp[[out]] <- with(
+    df_imp, glm(as.formula(paste0(out, " ~ event_time"))),
+    family = binomial()
   )
 }
 
-# posterior probability
-posterior_probability <- function(mod) {
-  mod %>%
-    spread_draws(`b_event_timeEnd`) %>%
-    summarise(
-      pp = sum(`b_event_timeEnd` < 0) / length(`b_event_timeEnd`)
-    ) %>%
-    ungroup() %>%
-    dplyr::select(pp) %>%
-    unlist()
+# p-value
+pvalue <- function(x) {
+  s <- summary(pool(x))
+  s$p.value[s$term == "event_timeEnd"]
 }
 
-pp_comp <- c()
-for (out in names(all_outcomes)) {
-  pp_comp[out] <- posterior_probability(mod_comp[[out]])
-}
+pval <- sapply(mod_comp, pvalue)
 
 write_pvalue <- function(x) {
-  if (x > .99) {
-    return("Pr.>99%")
+  if (x < 0.01) {
+    return("p<0.01")
   } else {
-    return(paste0("Pr.=", trimws(format(round(100 * x), ndigits = 2)), "%"))
+    return(paste0("p=", round(x, 2)))
   }
 }
 
-p_val_txt <- sapply(pp_comp, write_pvalue)
+pval_txt <- sapply(pval, write_pvalue)
 
 # proportion of abnormalities
-df_comp_long <- do.call(rbind, df_comp) %>%
-  mutate(`.imp` = rep(1:100, each = 10)) %>%
+df_imp_prop <- complete(df_imp, "long") %>%
+  dplyr::select(.imp, event_time, names(all_outcomes)) %>%
+  melt(c("event_time", ".imp")) %>%
+  group_by(.imp, variable, event_time) %>%
+  summarise(
+    n = sum(value),
+    N = n(),
+    p = 100 * n / N
+  ) %>%
   ungroup() %>%
   group_by(variable, event_time) %>%
-  summarise(p = mean(p)) %>%
-  ungroup() %>%
+  summarise(
+    n_m = mean(n),
+    n_s = sd(n),
+    p_m = mean(p),
+    p_s = sd(p)
+  ) %>%
   mutate(
     variable = recode(variable, !!!all_outcomes),
     variable = factor(
@@ -896,43 +824,48 @@ df_comp_long <- do.call(rbind, df_comp) %>%
   ) %>%
   arrange(variable)
 
-p_val_y_pos <- df_comp_long %>%
+pval_ypos <- df_imp_prop %>%
+  mutate(p_pos = p_m + p_s) %>%
   group_by(variable) %>%
   summarize(
-    p = max(p)
+    p_pos = max(p_pos)
   ) %>%
   ungroup() %>%
-  mutate(p = p + .075) %>%
+  mutate(p_pos = p_pos + 2.5) %>%
   arrange(variable) %>%
-  pull(p)
+  pull(p_pos)
 
 # plot
-pl_comp <- df_comp_long %>%
-  ggplot(aes(x = variable, fill = event_time, y = p)) +
+pl_comp <- df_imp_prop %>%
+  ggplot(aes(x = variable, fill = event_time, y = p_m)) +
   geom_bar(
     stat = "identity",
     position = position_dodge(width = .66),
     width = .5
   ) +
-  geom_text(
-    aes(label = paste0(round(100 * p), "%")),
-    vjust = -1, size = 8 / cm(1),
-    position = position_dodge(width = .66)
+  geom_errorbar(
+    aes(ymin = p_m - p_s, ymax = p_m + p_s),
+    position = position_dodge(width = .66),
+    width = .2
   ) +
   ggsignif::geom_signif(
-    annotations = p_val_txt,
-    y_position = p_val_y_pos,
+    annotations = pval_txt,
+    y_position = pval_ypos,
     xmin = c(.75, 1.75, 2.75, 3.75, 4.75),
     xmax = c(1.25, 2.25, 3.25, 4.25, 5.25),
     textsize = 8 / cm(1)
   ) +
   scale_y_continuous(
     breaks = scales::breaks_pretty(5),
-    expand = expansion(mult = c(0, 0.025)),
-    labels = scales::percent_format(suffix = "")
+    expand = expansion(mult = c(0, 0.025))
   ) +
   scale_x_discrete(labels = all_outcomes) +
-  scale_fill_manual(values = c(wes_palette("FrenchDispatch")[2], wes_palette("Moonrise3")[2])) +
+  scale_fill_manual(
+    values = c(
+      wes_palette("FrenchDispatch")[2],
+      wes_palette("Moonrise3")[2]
+    )
+  ) +
   coord_cartesian(ylim = c(0, NA), clip = "off") +
   labs(y = "Proportion (%)", x = "Pericardial changes") +
   theme_custom(8) +
@@ -953,72 +886,38 @@ save_plot(
 )
 ```
 
-### FUP Patients - paired analysis
+### All patients - complete case analysis
 
-```{r pericardial-changes-fup}
-# prepare data
-df_comp_fup <- lapply(df_imp_list, function(x) {
-  x %>%
-    filter(event_time %in% c("Start", "End")) %>%
-    group_by(record_id) %>%
-    filter(n() == 2) %>%
-    ungroup() %>%
-    dplyr::select(
-      record_id,
-      event_time,
-      constriction_sign,
-      constriction,
-      pericard_effusion,
-      pericard_thickening,
-      pericardial_calc
-    ) %>%
-    melt(c("record_id", "event_time")) %>%
-    group_by(variable, event_time) %>%
-    summarize(
-      n = sum(value),
-      N = n(),
-      p = n / N,
-    ) %>%
-    ungroup() %>%
-    mutate(
-      event_time = factor(
-        event_time,
-        levels = c("Start", "End")
-      )
-    )
-})
-
+```{r pericardial-changes-fup-complete}
 # estimate models
-mod_comp_fup <- list()
+mod_comp_cpl <- list()
 for (out in names(all_outcomes)) {
-  df_comp_out <- lapply(df_comp_fup, function(x) {
-    x %>%
-      filter(variable == out)
-  })
-  mod_comp_fup[[out]] <- brm_multiple(
-    n | trials(N) ~ event_time,
-    family = binomial(),
-    data = df_comp_out,
-    chains = 1,
-    iter = 1000,
-    seed = 12345
+  mod_comp_cpl[[out]] <- with(
+    df_sub, glm(as.formula(paste0(out, " ~ event_time"))),
+    family = binomial()
   )
 }
 
-# posterior probability
-pp_comp_fup <- c()
-for (out in names(all_outcomes)) {
-  pp_comp_fup[out] <- posterior_probability(mod_comp_fup[[out]])
+# p-value
+pvalue_unpool <- function(x) {
+  s <- coef(summary(x))[, 4]
+  s["event_timeEnd"]
 }
-
-p_val_txt_fup <- sapply(pp_comp_fup, write_pvalue)
+pval_cpl <- sapply(mod_comp_cpl, pvalue_unpool)
+pval_txt_cpl <- sapply(pval_cpl, write_pvalue)
 
 # proportion of abnormalities
-df_comp_long_fup <- do.call(rbind, df_comp_fup) %>%
-  mutate(`.imp` = rep(1:100, each = 10)) %>%
-  ungroup() %>%
+df_cpl_prop <- df_sub %>%
+  dplyr::select(event_time, names(all_outcomes)) %>%
+  melt(c("event_time")) %>%
   group_by(variable, event_time) %>%
-  summarise(p = mean(p)) %>%
+  summarise(
+    n = sum(value, na.rm = TRUE),
+    N = n(),
+    p = round(100 * n / N),
+    nd = sum(is.na(value)),
+    p_nd = round(100 * nd / N)
+  ) %>%
   ungroup() %>%
   mutate(
     variable = recode(variable, !!!all_outcomes),
@@ -1028,46 +927,136 @@ df_comp_long_fup <- do.call(rbind, df_comp_fup) %>%
     )
   ) %>%
   arrange(variable)
+```
 
-df_comp_long_fup
-p_val_txt_fup
+### FUP Patients - paired analysis
 
-p_val_y_pos_fup <- df_comp_long_fup %>%
-  group_by(variable) %>%
-  summarize(
-    p = max(p)
+```{r pericardial-changes-fup}
+# subset primary outcomes
+df_sub_fup <- df %>%
+  filter(event_time %in% c("Start", "End")) %>%
+  group_by(record_id) %>%
+  filter(n() == 2) %>%
+  ungroup() %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    constriction_sign,
+    constriction,
+    pericard_effusion,
+    pericard_thickening,
+    pericardial_calc,
+    site,
+    age_cat25, sex,
+    clindiag, cavity,
+    hiv, tbd_pat_cat,
+    drugresistant
+  ) %>%
+  mutate(
+    across(c(
+      constriction_sign,
+      constriction,
+      pericard_effusion,
+      pericard_thickening,
+      pericardial_calc
+    ), ~ ifelse(.x == "Yes", 1, 0)),
+    event_time = factor(
+      event_time,
+      levels = c("Start", "End")
+    )
+  )
+
+
+# impute data
+df_imp_fup <- mice(
+  data = dplyr::select(df_sub_fup, -record_id),
+  m = 100,
+  seed = 12345
+)
+
+# estimate models
+mod_comp_fup <- list()
+for (out in names(all_outcomes)) {
+  mod_comp_fup[[out]] <- with(
+    df_imp_fup, glm(as.formula(paste0(out, " ~ event_time"))),
+    family = binomial()
+  )
+}
+
+# p-value
+pval_fup <- sapply(mod_comp_fup, pvalue)
+pval_txt_fup <- sapply(pval_fup, write_pvalue)
+
+# proportion of abnormalities
+df_imp_fup_prop <- complete(df_imp_fup, "long") %>%
+  dplyr::select(.imp, event_time, names(all_outcomes)) %>%
+  melt(c("event_time", ".imp")) %>%
+  group_by(.imp, variable, event_time) %>%
+  summarise(
+    n = sum(value),
+    N = n(),
+    p = 100 * n / N
   ) %>%
   ungroup() %>%
-  mutate(p = p + .075) %>%
+  group_by(variable, event_time) %>%
+  summarise(
+    n_m = mean(n),
+    n_s = sd(n),
+    p_m = mean(p),
+    p_s = sd(p)
+  ) %>%
+  mutate(
+    variable = recode(variable, !!!all_outcomes),
+    variable = factor(
+      variable,
+      levels = all_outcomes
+    )
+  ) %>%
+  arrange(variable)
+
+# p-value position in plot
+pval_ypos_fup <- df_imp_fup_prop %>%
+  mutate(p_pos = p_m + p_s) %>%
+  group_by(variable) %>%
+  summarize(
+    p_pos = max(p_pos)
+  ) %>%
+  ungroup() %>%
+  mutate(p_pos = p_pos + 2.5) %>%
   arrange(variable) %>%
-  pull(p)
+  pull(p_pos)
 
 # plot
-pl_comp_fup <- df_comp_long_fup %>%
-  ggplot(aes(x = variable, fill = event_time, y = p)) +
+pl_comp_fup <- df_imp_fup_prop %>%
+  ggplot(aes(x = variable, fill = event_time, y = p_m)) +
   geom_bar(
-    stat = "identity", position = position_dodge(width = .66),
+    stat = "identity",
+    position = position_dodge(width = .66),
     width = .5
   ) +
-  geom_text(
-    aes(label = paste0(round(100 * p), "%")),
-    vjust = -1, size = 8 / cm(1),
-    position = position_dodge(width = .66)
+  geom_errorbar(
+    aes(ymin = p_m - p_s, ymax = p_m + p_s),
+    position = position_dodge(width = .66),
+    width = .2
   ) +
   ggsignif::geom_signif(
-    annotations = p_val_txt_fup,
-    y_position = p_val_y_pos_fup,
+    annotations = pval_txt_fup,
+    y_position = pval_ypos_fup,
     xmin = c(.75, 1.75, 2.75, 3.75, 4.75),
     xmax = c(1.25, 2.25, 3.25, 4.25, 5.25),
     textsize = 8 / cm(1)
   ) +
   scale_y_continuous(
     breaks = scales::breaks_pretty(5),
-    expand = expansion(mult = c(0, 0.025)),
-    labels = scales::percent_format(suffix = "")
+    expand = expansion(mult = c(0, 0.025))
   ) +
   scale_x_discrete(labels = all_outcomes) +
-  scale_fill_manual(values = c(wes_palette("FrenchDispatch")[2], wes_palette("Moonrise3")[2])) +
+  scale_fill_manual(
+    values = c(
+      wes_palette("FrenchDispatch")[2],
+      wes_palette("Moonrise3")[2]
+    )
+  ) +
   coord_cartesian(ylim = c(0, NA), clip = "off") +
   labs(y = "Proportion (%)", x = "Pericardial changes") +
   theme_custom(8) +
@@ -1088,148 +1077,257 @@ save_plot(
 )
 ```
 
-## Association with patient characteristics
+### FUP Patients - paired complete case analysis
 
-### Baseline
-
-```{r association-baseline}
-df_base <- lapply(df_imp_list, function(x) {
-  filter(x, event_time == "Start")
-})
-
-# models
-est_assoc_base <- tibble(
-  outcome = character(),
-  predictor = character(),
-  mean = numeric(),
-  lower = numeric(),
-  upper = numeric()
-)
-preds <- c(
-  "<25y",
-  "Female",
-  "HIV+",
-  "Relapse",
-  "Cavitation"
-)
-pred_vars <- c(
-  "age_cat25",
-  "sex",
-  "hiv",
-  "tbd_pat_cat",
-  "cavity"
-)
-outcome_vars <- c(
-  "pericard_effusion",
-  "pericard_thickening",
-  "constriction_sign"
-)
-outcomes <- c(
-  "Pericardial effusion",
-  "Pericardial thickening",
-  "Signs of constriction"
-)
-
-for (out in 1:length(outcomes)) {
-  for (pr in 1:length(pred_vars)) {
-    # model
-    pr_coef <- paste0(pred_vars[pr], levels(df[[pred_vars[pr]]])[2])
-    mod <- brm_multiple(
-      as.formula(paste0(outcome_vars[out], "~ site + ", pred_vars[pr])),
-      family = bernoulli(),
-      data = df_base,
-      seed = 12345,
-      chains = 1,
-      iter = 1000,
-      prior = prior_string(
-        "normal(0, 1)",
-        class = "b",
-        coef = pr_coef
-      )
-    )
-
-    # estimated association
-    est <- exp(
-      spread_draws(
-        mod,
-        !!sym(paste0("b_", pr_coef))
-      )[[4]]
-    )
-
-    assoc <- tibble(
-      outcome = outcomes[out],
-      predictor = preds[pr],
-      mean = mean(est),
-      lower = quantile(est, .025),
-      upper = quantile(est, .975)
-    )
-
-    # add
-    est_assoc_base <- rbind(est_assoc_base, assoc)
-  }
+```{r pericardial-changes-fup-complete}
+# estimate models
+mod_comp_fup_cpl <- list()
+for (out in names(all_outcomes)) {
+  mod_comp_fup_cpl[[out]] <- with(
+    df_sub_fup, glm(as.formula(paste0(out, " ~ event_time"))),
+    family = binomial()
+  )
 }
 
-est_assoc_base %>%
-  mutate_if(is.numeric, round, 2) %>%
-  write.csv("results/association-baseline.csv", row.names = FALSE)
+# p-value
+pval_fup_cpl <- sapply(mod_comp_fup_cpl, pvalue_unpool)
+pval_txt_fup_cpl <- sapply(pval_fup_cpl, write_pvalue)
+
+# proportion of abnormalities
+df_fup_cpl_prop <- df_sub_fup %>%
+  dplyr::select(event_time, names(all_outcomes)) %>%
+  melt(c("event_time")) %>%
+  group_by(variable, event_time) %>%
+  summarise(
+    n = sum(value, na.rm = TRUE),
+    N = n(),
+    p = round(100 * n / N),
+    nd = sum(is.na(value)),
+    p_nd = round(100 * nd / N)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    variable = recode(variable, !!!all_outcomes),
+    variable = factor(
+      variable,
+      levels = all_outcomes
+    )
+  ) %>%
+  arrange(variable)
+
+df_fup_cpl_prop
 ```
 
-### Improvement
+### Overiew table
 
-```{r association-improvement}
-df_improve <- lapply(df_imp_list, function(x) {
-  x %>%
-    dplyr::select(
-      record_id,
-      event_time,
+```{r overview-table}
+out_names <- unname(gsub("\n", " ", all_outcomes))
+
+prop_tbl_cpl_header <- rbind(
+  c("", "", "Start of treatment", "", "", "End of treatment", "", "", "Comparison"),
+  c("Abnormality", "", "n (%)", "ND (%)", "", "n (%)", "ND (%)", "", "p-value")
+)
+
+prop_tbl_cpl_A_name <- paste0(
+  "Panel A: Paired analysis of patients with follow-up visits",
+  " (N=", n_distinct(df_sub_fup$record_id), ")"
+)
+
+prop_tbl_cpl_A <- cbind(
+  out_names,
+  rep("", length(out_names)),
+  paste0(
+    pull(filter(df_fup_cpl_prop, event_time == "Start"), n), " (",
+    pull(filter(df_fup_cpl_prop, event_time == "Start"), p), "%)"
+  ),
+  paste0(
+    pull(filter(df_fup_cpl_prop, event_time == "Start"), nd), " (",
+    pull(filter(df_fup_cpl_prop, event_time == "Start"), p_nd), "%)"
+  ),
+  rep("", length(out_names)),
+  paste0(
+    pull(filter(df_fup_cpl_prop, event_time == "End"), n), " (",
+    pull(filter(df_fup_cpl_prop, event_time == "End"), p), "%)"
+  ),
+  paste0(
+    pull(filter(df_fup_cpl_prop, event_time == "End"), nd), " (",
+    pull(filter(df_fup_cpl_prop, event_time == "End"), p_nd), "%)"
+  ),
+  rep("", length(out_names)),
+  gsub("=", "", gsub("p", "", c(unname(pval_txt_fup_cpl)), fixed = TRUE))
+)
+
+prop_tbl_cpl_B_name <- paste0(
+  "Panel B: Cross-sectional analysis of all patients",
+  " (N=", n_distinct(df_sub$record_id), ")"
+)
+
+prop_tbl_cpl_B <- cbind(
+  out_names,
+  rep("", length(out_names)),
+  paste0(
+    pull(filter(df_cpl_prop, event_time == "Start"), n), " (",
+    pull(filter(df_cpl_prop, event_time == "Start"), p), "%)"
+  ),
+  paste0(
+    pull(filter(df_cpl_prop, event_time == "Start"), nd), " (",
+    pull(filter(df_cpl_prop, event_time == "Start"), p_nd), "%)"
+  ),
+  rep("", length(out_names)),
+  paste0(
+    pull(filter(df_cpl_prop, event_time == "End"), n), " (",
+    pull(filter(df_cpl_prop, event_time == "End"), p), "%)"
+  ),
+  paste0(
+    pull(filter(df_cpl_prop, event_time == "End"), nd), " (",
+    pull(filter(df_cpl_prop, event_time == "End"), p_nd), "%)"
+  ),
+  rep("", length(out_names)),
+  gsub("=", "", gsub("p", "", c(unname(pval_txt_cpl)), fixed = TRUE))
+)
+
+prop_tbl_cpl <- rbind(
+  prop_tbl_cpl_header,
+  c(prop_tbl_cpl_A_name, rep("", 8)),
+  prop_tbl_cpl_A,
+  rep("", 9),
+  c(prop_tbl_cpl_B_name, rep("", 8)),
+  prop_tbl_cpl_B
+)
+
+write.table(
+  prop_tbl_cpl,
+  file = "results/tbl-pericardial-changes-complete-case-analysis.txt",
+  row.names = FALSE, col.names = FALSE,
+  sep = ",", quote = FALSE
+)
+
+prop_tbl_header <- rbind(
+  c("", "", "Start of treatment", "", "", "End of treatment", "", "", "Comparison"),
+  c("Abnormality", "", "n (SD)", "% (SD)", "", "n (SD)", "% (SD)", "", "p-value")
+)
+
+prop_tbl_A <- cbind(
+  out_names,
+  rep("", length(out_names)),
+  paste0(
+    round(pull(filter(df_imp_fup_prop, event_time == "Start"), n_m)), " (",
+    round(pull(filter(df_imp_fup_prop, event_time == "Start"), n_s), 1), "%)"
+  ),
+  paste0(
+    round(pull(filter(df_imp_fup_prop, event_time == "Start"), p_m)), " (",
+    round(pull(filter(df_imp_fup_prop, event_time == "Start"), p_s), 1), "%)"
+  ),
+  rep("", length(out_names)),
+  paste0(
+    round(pull(filter(df_imp_fup_prop, event_time == "End"), n_m)), " (",
+    round(pull(filter(df_imp_fup_prop, event_time == "End"), n_s), 1), "%)"
+  ),
+  paste0(
+    round(pull(filter(df_imp_fup_prop, event_time == "End"), p_m)), " (",
+    round(pull(filter(df_imp_fup_prop, event_time == "End"), p_s), 1), "%)"
+  ),
+  rep("", length(out_names)),
+  gsub("=", "", gsub("p", "", c(unname(pval_txt_fup)), fixed = TRUE))
+)
+
+prop_tbl_B <- cbind(
+  out_names,
+  rep("", length(out_names)),
+  paste0(
+    round(pull(filter(df_imp_prop, event_time == "Start"), n_m)), " (",
+    round(pull(filter(df_imp_prop, event_time == "Start"), n_s), 1), "%)"
+  ),
+  paste0(
+    round(pull(filter(df_imp_prop, event_time == "Start"), p_m)), " (",
+    round(pull(filter(df_imp_prop, event_time == "Start"), p_s), 1), "%)"
+  ),
+  rep("", length(out_names)),
+  paste0(
+    round(pull(filter(df_imp_prop, event_time == "End"), n_m)), " (",
+    round(pull(filter(df_imp_prop, event_time == "End"), n_s), 1), "%)"
+  ),
+  paste0(
+    round(pull(filter(df_imp_prop, event_time == "End"), p_m)), " (",
+    round(pull(filter(df_imp_prop, event_time == "End"), p_s), 1), "%)"
+  ),
+  rep("", length(out_names)),
+  gsub("=", "", gsub("p", "", c(unname(pval_txt)), fixed = TRUE))
+)
+
+prop_tbl <- rbind(
+  prop_tbl_header,
+  c(prop_tbl_cpl_A_name, rep("", 8)),
+  prop_tbl_A,
+  rep("", 9),
+  c(prop_tbl_cpl_B_name, rep("", 8)),
+  prop_tbl_B
+)
+
+write.table(
+  prop_tbl,
+  file = "results/tbl-pericardial-changes-imputed-analysis.txt",
+  row.names = FALSE, col.names = FALSE,
+  sep = ",", quote = FALSE
+)
+```
+
+
+## Association with patient characteristics
+
+```{r association-baseline}
+# subset primary outcomes
+df_sub_fup_wide <- df %>%
+  filter(event_time %in% c("Start", "End")) %>%
+  group_by(record_id) %>%
+  filter(n() == 2) %>%
+  ungroup() %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    constriction_sign,
+    constriction,
+    pericard_effusion,
+    pericard_thickening,
+    pericardial_calc,
+    site,
+    age_cat25, sex,
+    clindiag, cavity,
+    hiv, tbd_pat_cat,
+    drugresistant
+  ) %>%
+  mutate(
+    across(c(
       constriction_sign,
       constriction,
       pericard_effusion,
       pericard_thickening,
       pericardial_calc
-    ) %>%
-    group_by(record_id) %>%
-    filter(event_time == "Start" | event_time == "End") %>%
-    filter(n() == 2) %>%
-    ungroup() %>%
-    melt(c("record_id", "event_time")) %>%
-    mutate(variable = factor(
-      variable,
-      levels = c(
-        "pericard_effusion",
-        "pericard_thickening",
-        "pericardial_calc",
-        "constriction_sign",
-        "constriction"
-      )
-    )) %>%
-    reshape2::dcast(record_id + variable ~ event_time) %>%
-    mutate(
-      treat_change =
-        ifelse(`Start` + `End` == 2, -1,
-          ifelse(`Start` == 0 & `End` == 1, -2,
-            ifelse(`Start` == 1 & `End` == 0, 2, 1)
-          )
-        )
-    ) %>%
-    dplyr::select(-`Start`, -`End`) %>%
-    filter(treat_change != 1) %>%
-    mutate(treat_change = ifelse(treat_change < 0, 0, 1)) %>%
-    left_join(df %>%
-      group_by(record_id) %>%
-      slice(1) %>%
-      ungroup() %>%
-      dplyr::select(
-        record_id, site,
-        age_cat25, sex,
-        clindiag, cavity,
-        hiv, tbd_pat_cat,
-        drugresistant
-      ), by = "record_id")
-})
+    ), ~ ifelse(.x == "Yes", 1, 0))
+  ) %>%
+  pivot_wider(
+    names_from = event_time,
+    values_from = c(
+      constriction_sign, constriction,
+      pericard_effusion, pericard_thickening,
+      pericardial_calc
+    ),
+    names_sep = "_"
+  )
 
-# models
-est_assoc_imp <- tibble(
+
+
+# impute data
+df_imp_fup_wide <- mice(
+  data = dplyr::select(df_sub_fup_wide, -record_id),
+  m = 100,
+  seed = 12345
+)
+
+# estimate univariable associations
+est_assoc <- tibble(
+  type = character(),
+  time = character(),
   outcome = character(),
   predictor = character(),
   mean = numeric(),
@@ -1237,82 +1335,150 @@ est_assoc_imp <- tibble(
   upper = numeric()
 )
 
+predictors <- c(
+  "age_cat25",
+  "sex",
+  "hiv",
+  "clindiag",
+  "tbd_pat_cat",
+  "cavity",
+  "drugresistant"
+)
 
-for (out in 1:length(outcomes)) {
-  for (pr in 1:length(pred_vars)) {
-    # model
-    pr_coef <- paste0(pred_vars[pr], levels(df[[pred_vars[pr]]])[2])
-    df_improve_out <- lapply(df_improve, function(x) {
-      x %>%
-        filter(variable == outcome_vars[out])
-    })
-    mod <- brm_multiple(
-      as.formula(paste0("treat_change ~ site + ", pred_vars[pr])),
-      family = bernoulli(),
-      data = df_improve_out,
-      seed = 12345,
-      chains = 1,
-      iter = 1000,
-      prior = prior_string(
-        "normal(0, 1)",
-        class = "b",
-        coef = pr_coef
-      )
+for (out in names(all_outcomes)) {
+  # estimate multivariable associations at start of treatment
+  mod_mult_start <- with(
+    df_imp_fup_wide,
+    glm(as.formula(paste0(out, "_Start ~ site + ", paste(predictors, collapse = " + ")))),
+    family = binomial()
+  )
+
+  mod_sum <- summary(pool(mod_mult_start))
+  mean_est <- mod_sum$estimate[-c(1:2)]
+  se_est <- mod_sum$std.error[-c(1:2)]
+
+  assoc_mult_start <- tibble(
+    type = "Multivariable",
+    time = "Start",
+    outcome = out,
+    predictor = predictors,
+    mean = exp(mean_est),
+    lower = exp(mean_est - qnorm(.975) * se_est),
+    upper = exp(mean_est + qnorm(.975) * se_est)
+  )
+
+  est_assoc <- rbind(est_assoc, assoc_mult_start)
+
+  # estimate multivariable associations at end of treatment
+  mod_mult_end <- with(
+    df_imp_fup_wide,
+    glm(as.formula(paste0(out, "_End ~ site + ", out, "_Start + ", paste(predictors, collapse = " + ")))),
+    family = binomial()
+  )
+
+  mod_sum <- summary(pool(mod_mult_end))
+  mean_est <- mod_sum$estimate[-c(1:3)]
+  se_est <- mod_sum$std.error[-c(1:3)]
+
+  assoc_mult_end <- tibble(
+    type = "Multivariable",
+    time = "End",
+    outcome = out,
+    predictor = predictors,
+    mean = exp(mean_est),
+    lower = exp(mean_est - qnorm(.975) * se_est),
+    upper = exp(mean_est + qnorm(.975) * se_est)
+  )
+
+  est_assoc <- rbind(est_assoc, assoc_mult_end)
+
+  for (pred in predictors) {
+    # estimate univariable association at start of treatment
+    mod <- with(
+      df_imp_fup_wide,
+      glm(as.formula(paste0(out, "_Start ~ site + ", pred))),
+      family = binomial()
     )
 
-    # estimated association
-    est <- exp(
-      spread_draws(
-        mod,
-        !!sym(paste0("b_", pr_coef))
-      )[[4]]
+    coef_name <- paste0(pred, levels(df[[pred]])[2])
+    mod_sum <- summary(pool(mod))
+    mean_est <- mod_sum$estimate[mod_sum$term == coef_name]
+    se_est <- mod_sum$std.error[mod_sum$term == coef_name]
+
+    assoc_start <- tibble(
+      type = "Univariable",
+      time = "Start",
+      outcome = out,
+      predictor = pred,
+      mean = exp(mean_est),
+      lower = exp(mean_est - qnorm(.975) * se_est),
+      upper = exp(mean_est + qnorm(.975) * se_est)
     )
 
-    assoc <- tibble(
-      outcome = outcomes[out],
-      predictor = preds[pr],
-      mean = mean(est),
-      lower = quantile(est, .025),
-      upper = quantile(est, .975)
+    est_assoc <- rbind(est_assoc, assoc_start)
+
+    # estimate association at end of treatment
+    mod <- with(
+      df_imp_fup_wide,
+      glm(as.formula(paste0(out, "_End ~ site + ", out, "_Start +", pred))),
+      family = binomial()
     )
 
-    # add
-    est_assoc_imp <- rbind(est_assoc_imp, assoc)
+    coef_name <- paste0(pred, levels(df[[pred]])[2])
+    mod_sum <- summary(pool(mod))
+    mean_est <- mod_sum$estimate[mod_sum$term == coef_name]
+    se_est <- mod_sum$std.error[mod_sum$term == coef_name]
+
+    assoc_end <- tibble(
+      type = "Univariable",
+      time = "End",
+      outcome = out,
+      predictor = pred,
+      mean = exp(mean_est),
+      lower = exp(mean_est - qnorm(.975) * se_est),
+      upper = exp(mean_est + qnorm(.975) * se_est)
+    )
+
+    est_assoc <- rbind(est_assoc, assoc_end)
   }
 }
 
-est_assoc <- rbind(
-  est_assoc_base %>% mutate(what = "Association with baseline"),
-  est_assoc_imp %>% mutate(what = "Association with improvement")
-) %>%
+pred_names <- c(
+  "<25y",
+  "Female",
+  "HIV+",
+  "Clin. diagnosed",
+  "Relapse",
+  "Cavitation",
+  "MDR"
+)
+
+names(pred_names) <- predictors
+
+out_names <- gsub("\n", " ", all_outcomes)
+
+est_assoc <- est_assoc %>%
   mutate(
+    predictor = recode(predictor, !!!pred_names),
+    outcome = recode(outcome, !!!out_names),
     outcome = factor(
       outcome,
-      levels = rev(c(
-        "Pericardial effusion",
-        "Pericardial thickening",
-        "Signs of constriction"
-      ))
+      levels = out_names
     ),
     predictor = factor(
       predictor,
-      levels = rev(c(
-        "<25y",
-        "Female",
-        "HIV+",
-        "Relapse",
-        "Cavitation"
-      ))
+      levels = rev(pred_names)
+    ),
+    time = factor(
+      paste(time, "of treatment"),
+      levels = paste(c("Start", "End"), "of treatment")
+    ),
+    type = factor(
+      paste(type, "analysis"),
+      levels = paste(c("Univariable", "Multivariable"), "analysis")
     )
   )
 
-est_assoc_imp %>%
-  mutate_if(is.numeric, round, 2) %>%
-  write.csv("results/association-improvement.csv", row.names = FALSE)
-```
-
-
-```{r}
 # plot
 pl_assoc <- est_assoc %>%
   ggplot(aes(
@@ -1320,52 +1486,47 @@ pl_assoc <- est_assoc %>%
     xmin = lower,
     xmax = upper,
     y = predictor,
-    color = outcome,
-    group = outcome
+    color = type
   )) +
-  facet_wrap(~what, ncol = 2) +
+  facet_grid(outcome ~ time) +
   geom_vline(
     aes(xintercept = 1),
     linetype = "dotted", color = "grey30"
   ) +
   geom_errorbar(
-    width = .25,
-    position = position_dodge(width = .66),
-    linewidth = 1
+    width = .5,
+    position = position_dodge(width = .66)
   ) +
   geom_point(
-    shape = 23, size = 2,
+    shape = 23, size = 1, fill = "white",
     position = position_dodge(width = .66),
-    fill = "white"
-  ) +
-  scale_color_manual(
-    values = c(
-      wes_palette("AsteroidCity2")[4],
-      wes_palette("IsleofDogs2")[2],
-      wes_palette("AsteroidCity1")[4]
-    ),
-    breaks = outcomes
   ) +
   scale_x_continuous(
-    breaks = pretty_breaks(n = 4),
     limits = c(0, NA),
     expand = c(0, 0)
+  ) +
+  scale_color_manual(
+    values = wes_palette("Darjeeling2")[c(2, 5)]
   ) +
   labs(x = "Odds ratio") +
   theme_custom() +
   theme(
     axis.title.y = element_blank(),
-    legend.position = "bottom", legend.title = element_blank(),
-    legend.margin = margin(t = 0, r = 3, b = 3, l = 3),
-    legend.key.height = unit(0.15, "cm"),
-    legend.key.width = unit(1, "cm"),
-    strip.text.x = element_text(face = 2, margin = margin(b = 5, t = 10))
+    strip.text.x = element_text(face = 2, margin = margin(b = 10, t = 10)),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    panel.spacing.y = unit(0.5, "lines")
   ) +
   guides(color = guide_legend(nrow = 1))
 
 save_plot(
   pl_assoc,
   pdf_file = "results/association.pdf",
-  w = 16, h = 12
+  w = 16, h = 23
 )
+
+est_assoc %>%
+  mutate_if(is.numeric, round, 2) %>%
+  arrange(type, time, outcome, predictor) %>%
+  writexl::write_xlsx("results/association.xlsx")
 ```
