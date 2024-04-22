@@ -21,6 +21,8 @@ library(brms)
 library(tidybayes)
 library(ggalluvial)
 library(mice)
+library(mitools)
+library(norm)
 source("utils/plotting.r")
 source("utils/tex.r")
 ```
@@ -774,8 +776,9 @@ df_imp <- mice(
 mod_comp <- list()
 for (out in names(all_outcomes)) {
   mod_comp[[out]] <- with(
-    df_imp, glm(as.formula(paste0(out, " ~ event_time"))),
-    family = binomial()
+    df_imp, glm(as.formula(paste0(out, " ~ event_time")),
+      family = binomial()
+    )
   )
 }
 
@@ -789,9 +792,9 @@ pval <- sapply(mod_comp, pvalue)
 
 write_pvalue <- function(x) {
   if (x < 0.01) {
-    return("p<0.01")
+    return("p<0.001")
   } else {
-    return(paste0("p=", round(x, 2)))
+    return(paste0("p=", round_k(x, 2)))
   }
 }
 
@@ -893,8 +896,9 @@ save_plot(
 mod_comp_cpl <- list()
 for (out in names(all_outcomes)) {
   mod_comp_cpl[[out]] <- with(
-    df_sub, glm(as.formula(paste0(out, " ~ event_time"))),
-    family = binomial()
+    df_sub, glm(as.formula(paste0(out, " ~ event_time")),
+      family = binomial()
+    )
   )
 }
 
@@ -913,10 +917,10 @@ df_cpl_prop <- df_sub %>%
   group_by(variable, event_time) %>%
   summarise(
     n = sum(value, na.rm = TRUE),
-    N = n(),
+    N = sum(!is.na(value)),
     p = round(100 * n / N),
     nd = sum(is.na(value)),
-    p_nd = round(100 * nd / N)
+    p_nd = round(100 * nd / n())
   ) %>%
   ungroup() %>%
   mutate(
@@ -978,8 +982,9 @@ df_imp_fup <- mice(
 mod_comp_fup <- list()
 for (out in names(all_outcomes)) {
   mod_comp_fup[[out]] <- with(
-    df_imp_fup, glm(as.formula(paste0(out, " ~ event_time"))),
-    family = binomial()
+    df_imp_fup, glm(as.formula(paste0(out, " ~ event_time")),
+      family = binomial()
+    )
   )
 }
 
@@ -1084,8 +1089,9 @@ save_plot(
 mod_comp_fup_cpl <- list()
 for (out in names(all_outcomes)) {
   mod_comp_fup_cpl[[out]] <- with(
-    df_sub_fup, glm(as.formula(paste0(out, " ~ event_time"))),
-    family = binomial()
+    df_sub_fup, glm(as.formula(paste0(out, " ~ event_time")),
+      family = binomial()
+    )
   )
 }
 
@@ -1100,10 +1106,10 @@ df_fup_cpl_prop <- df_sub_fup %>%
   group_by(variable, event_time) %>%
   summarise(
     n = sum(value, na.rm = TRUE),
-    N = n(),
+    N = sum(!is.na(value)),
     p = round(100 * n / N),
     nd = sum(is.na(value)),
-    p_nd = round(100 * nd / N)
+    p_nd = round(100 * nd / n())
   ) %>%
   ungroup() %>%
   mutate(
@@ -1138,20 +1144,20 @@ prop_tbl_cpl_A <- cbind(
   rep("", length(out_names)),
   paste0(
     pull(filter(df_fup_cpl_prop, event_time == "Start"), n), " (",
-    pull(filter(df_fup_cpl_prop, event_time == "Start"), p), "%)"
+    pull(filter(df_fup_cpl_prop, event_time == "Start"), p), ")"
   ),
   paste0(
     pull(filter(df_fup_cpl_prop, event_time == "Start"), nd), " (",
-    pull(filter(df_fup_cpl_prop, event_time == "Start"), p_nd), "%)"
+    pull(filter(df_fup_cpl_prop, event_time == "Start"), p_nd), ")"
   ),
   rep("", length(out_names)),
   paste0(
     pull(filter(df_fup_cpl_prop, event_time == "End"), n), " (",
-    pull(filter(df_fup_cpl_prop, event_time == "End"), p), "%)"
+    pull(filter(df_fup_cpl_prop, event_time == "End"), p), ")"
   ),
   paste0(
     pull(filter(df_fup_cpl_prop, event_time == "End"), nd), " (",
-    pull(filter(df_fup_cpl_prop, event_time == "End"), p_nd), "%)"
+    pull(filter(df_fup_cpl_prop, event_time == "End"), p_nd), ")"
   ),
   rep("", length(out_names)),
   gsub("=", "", gsub("p", "", c(unname(pval_txt_fup_cpl)), fixed = TRUE))
@@ -1167,20 +1173,20 @@ prop_tbl_cpl_B <- cbind(
   rep("", length(out_names)),
   paste0(
     pull(filter(df_cpl_prop, event_time == "Start"), n), " (",
-    pull(filter(df_cpl_prop, event_time == "Start"), p), "%)"
+    pull(filter(df_cpl_prop, event_time == "Start"), p), ")"
   ),
   paste0(
     pull(filter(df_cpl_prop, event_time == "Start"), nd), " (",
-    pull(filter(df_cpl_prop, event_time == "Start"), p_nd), "%)"
+    pull(filter(df_cpl_prop, event_time == "Start"), p_nd), ")"
   ),
   rep("", length(out_names)),
   paste0(
     pull(filter(df_cpl_prop, event_time == "End"), n), " (",
-    pull(filter(df_cpl_prop, event_time == "End"), p), "%)"
+    pull(filter(df_cpl_prop, event_time == "End"), p), ")"
   ),
   paste0(
     pull(filter(df_cpl_prop, event_time == "End"), nd), " (",
-    pull(filter(df_cpl_prop, event_time == "End"), p_nd), "%)"
+    pull(filter(df_cpl_prop, event_time == "End"), p_nd), ")"
   ),
   rep("", length(out_names)),
   gsub("=", "", gsub("p", "", c(unname(pval_txt_cpl)), fixed = TRUE))
@@ -1212,20 +1218,20 @@ prop_tbl_A <- cbind(
   rep("", length(out_names)),
   paste0(
     round(pull(filter(df_imp_fup_prop, event_time == "Start"), n_m)), " (",
-    round(pull(filter(df_imp_fup_prop, event_time == "Start"), n_s), 1), "%)"
+    round(pull(filter(df_imp_fup_prop, event_time == "Start"), n_s), 1), ")"
   ),
   paste0(
     round(pull(filter(df_imp_fup_prop, event_time == "Start"), p_m)), " (",
-    round(pull(filter(df_imp_fup_prop, event_time == "Start"), p_s), 1), "%)"
+    round(pull(filter(df_imp_fup_prop, event_time == "Start"), p_s), 1), ")"
   ),
   rep("", length(out_names)),
   paste0(
     round(pull(filter(df_imp_fup_prop, event_time == "End"), n_m)), " (",
-    round(pull(filter(df_imp_fup_prop, event_time == "End"), n_s), 1), "%)"
+    round(pull(filter(df_imp_fup_prop, event_time == "End"), n_s), 1), ")"
   ),
   paste0(
     round(pull(filter(df_imp_fup_prop, event_time == "End"), p_m)), " (",
-    round(pull(filter(df_imp_fup_prop, event_time == "End"), p_s), 1), "%)"
+    round(pull(filter(df_imp_fup_prop, event_time == "End"), p_s), 1), ")"
   ),
   rep("", length(out_names)),
   gsub("=", "", gsub("p", "", c(unname(pval_txt_fup)), fixed = TRUE))
@@ -1236,20 +1242,20 @@ prop_tbl_B <- cbind(
   rep("", length(out_names)),
   paste0(
     round(pull(filter(df_imp_prop, event_time == "Start"), n_m)), " (",
-    round(pull(filter(df_imp_prop, event_time == "Start"), n_s), 1), "%)"
+    round(pull(filter(df_imp_prop, event_time == "Start"), n_s), 1), ")"
   ),
   paste0(
     round(pull(filter(df_imp_prop, event_time == "Start"), p_m)), " (",
-    round(pull(filter(df_imp_prop, event_time == "Start"), p_s), 1), "%)"
+    round(pull(filter(df_imp_prop, event_time == "Start"), p_s), 1), ")"
   ),
   rep("", length(out_names)),
   paste0(
     round(pull(filter(df_imp_prop, event_time == "End"), n_m)), " (",
-    round(pull(filter(df_imp_prop, event_time == "End"), n_s), 1), "%)"
+    round(pull(filter(df_imp_prop, event_time == "End"), n_s), 1), ")"
   ),
   paste0(
     round(pull(filter(df_imp_prop, event_time == "End"), p_m)), " (",
-    round(pull(filter(df_imp_prop, event_time == "End"), p_s), 1), "%)"
+    round(pull(filter(df_imp_prop, event_time == "End"), p_s), 1), ")"
   ),
   rep("", length(out_names)),
   gsub("=", "", gsub("p", "", c(unname(pval_txt)), fixed = TRUE))
@@ -1276,54 +1282,6 @@ write.table(
 ## Association with patient characteristics
 
 ```{r association-baseline}
-# subset primary outcomes
-df_sub_fup_wide <- df %>%
-  filter(event_time %in% c("Start", "End")) %>%
-  group_by(record_id) %>%
-  filter(n() == 2) %>%
-  ungroup() %>%
-  dplyr::select(
-    record_id,
-    event_time,
-    constriction_sign,
-    constriction,
-    pericard_effusion,
-    pericard_thickening,
-    pericardial_calc,
-    site,
-    age_cat25, sex,
-    clindiag, cavity,
-    hiv, tbd_pat_cat,
-    drugresistant
-  ) %>%
-  mutate(
-    across(c(
-      constriction_sign,
-      constriction,
-      pericard_effusion,
-      pericard_thickening,
-      pericardial_calc
-    ), ~ ifelse(.x == "Yes", 1, 0))
-  ) %>%
-  pivot_wider(
-    names_from = event_time,
-    values_from = c(
-      constriction_sign, constriction,
-      pericard_effusion, pericard_thickening,
-      pericardial_calc
-    ),
-    names_sep = "_"
-  )
-
-
-
-# impute data
-df_imp_fup_wide <- mice(
-  data = dplyr::select(df_sub_fup_wide, -record_id),
-  m = 100,
-  seed = 12345
-)
-
 # estimate univariable associations
 est_assoc <- tibble(
   type = character(),
@@ -1332,142 +1290,193 @@ est_assoc <- tibble(
   predictor = character(),
   mean = numeric(),
   lower = numeric(),
-  upper = numeric()
+  upper = numeric(),
+  pvalue = numeric()
+)
+
+sub_outcomes <- c(
+  "pericard_effusion",
+  "pericard_thickening",
+  "constriction_sign"
 )
 
 predictors <- c(
   "age_cat25",
   "sex",
   "hiv",
-  "clindiag",
-  "tbd_pat_cat",
-  "cavity",
-  "drugresistant"
+  "tbd_pat_cat"
 )
+pred_cats <- paste0(
+  predictors,
+  sapply(predictors, function(x) levels(df[[x]])[2])
+)
+pred_cats_int <- paste0("event_timeEnd:", pred_cats)
 
-for (out in names(all_outcomes)) {
-  # estimate multivariable associations at start of treatment
-  mod_mult_start <- with(
-    df_imp_fup_wide,
-    glm(as.formula(paste0(out, "_Start ~ site + ", paste(predictors, collapse = " + ")))),
-    family = binomial()
+
+# function to compute pvalues in mitools
+MIpvalues <- function(mod) {
+  coefs <- MIextract(mod, fun = coefficients)
+  se <- MIextract(mod, fun = vcov)
+  se <- lapply(se, function(x) sqrt(diag(x)))
+  res <- norm::mi.inference(coefs, se)
+  return(res$signif)
+}
+
+for (out in sub_outcomes) {
+  # estimate multivariable associations
+  mult_form <- as.formula(paste0(
+    out, " ~ site + ",
+    paste("event_time *", predictors, collapse = " + ")
+  ))
+  mod_mult <- lapply(
+    1:df_imp_fup$m, function(i) {
+      glm(mult_form, data = complete(df_imp_fup, i), family = binomial())
+    }
   )
 
-  mod_sum <- summary(pool(mod_mult_start))
-  mean_est <- mod_sum$estimate[-c(1:2)]
-  se_est <- mod_sum$std.error[-c(1:2)]
+  mult_pool <- MIcombine(mod_mult)
+  mult_sum <- summary(mult_pool)
+  coef <- mult_sum[pred_cats, "results"]
+  se <- mult_sum[pred_cats, "se"]
+  pv <- MIpvalues(mod_mult)[pred_cats]
 
   assoc_mult_start <- tibble(
     type = "Multivariable",
     time = "Start",
     outcome = out,
     predictor = predictors,
-    mean = exp(mean_est),
-    lower = exp(mean_est - qnorm(.975) * se_est),
-    upper = exp(mean_est + qnorm(.975) * se_est)
+    mean = exp(coef),
+    lower = exp(coef - qnorm(.975) * se),
+    upper = exp(coef + qnorm(.975) * se),
+    pvalue = pv
   )
 
   est_assoc <- rbind(est_assoc, assoc_mult_start)
 
-  # estimate multivariable associations at end of treatment
-  mod_mult_end <- with(
-    df_imp_fup_wide,
-    glm(as.formula(paste0(out, "_End ~ site + ", out, "_Start + ", paste(predictors, collapse = " + ")))),
-    family = binomial()
-  )
+  coef_et <- mult_sum[pred_cats_int, "results"]
+  se_et <- mult_sum[pred_cats_int, "se"]
+  coef_end <- coef + coef_et
+  se_end <- numeric(length(coef_end))
+  for (i in seq_along(coef_end)) {
+    cov_i <- vcov(mult_pool)[pred_cats[i], pred_cats_int[i]]
+    se_end[i] <- sqrt(se[i]^2 + se_et[i]^2 + 2 * cov_i)
+  }
 
-  mod_sum <- summary(pool(mod_mult_end))
-  mean_est <- mod_sum$estimate[-c(1:3)]
-  se_est <- mod_sum$std.error[-c(1:3)]
+  pv_end <- numeric(length(coef_end))
+  for (i in 1:length(predictors)) {
+    predictors_neg <- predictors[!predictors %in% predictors[i]]
+    m1 <- with(df_imp_fup, glm(as.formula(
+      paste0(
+        out, " ~ site + ",
+        paste("event_time *", predictors_neg, collapse = " + ")
+      )
+    ), family = binomial()))
+    m2 <- with(df_imp_fup, glm(as.formula(
+      paste0(
+        out, " ~ site + ",
+        paste("event_time *", predictors, collapse = " + ")
+      )
+    ), family = binomial()))
+    pv_end[i] <- summary(D1(m2, m1))$comparisons$p.value
+  }
 
   assoc_mult_end <- tibble(
     type = "Multivariable",
     time = "End",
     outcome = out,
     predictor = predictors,
-    mean = exp(mean_est),
-    lower = exp(mean_est - qnorm(.975) * se_est),
-    upper = exp(mean_est + qnorm(.975) * se_est)
+    mean = exp(coef_end),
+    lower = exp(coef_end - qnorm(.975) * se_end),
+    upper = exp(coef_end + qnorm(.975) * se_end),
+    pvalue = pv_end
   )
 
   est_assoc <- rbind(est_assoc, assoc_mult_end)
 
   for (pred in predictors) {
-    # estimate univariable association at start of treatment
-    mod <- with(
-      df_imp_fup_wide,
-      glm(as.formula(paste0(out, "_Start ~ site + ", pred))),
-      family = binomial()
+    # estimate univariable association
+    uni_form <- as.formula(
+      paste0(
+        out, " ~ site + ",
+        paste("event_time *", pred, collapse = " + ")
+      )
+    )
+    mod_uni <- lapply(
+      1:df_imp_fup$m, function(i) {
+        glm(uni_form, data = complete(df_imp_fup, i), family = binomial())
+      }
     )
 
-    coef_name <- paste0(pred, levels(df[[pred]])[2])
-    mod_sum <- summary(pool(mod))
-    mean_est <- mod_sum$estimate[mod_sum$term == coef_name]
-    se_est <- mod_sum$std.error[mod_sum$term == coef_name]
+    term <- paste0(pred, levels(df[[pred]])[2])
+    uni_pool <- MIcombine(mod_uni)
+    uni_sum <- summary(uni_pool)
+    coef <- uni_sum[term, "results"]
+    se <- uni_sum[term, "se"]
+    pv <- MIpvalues(mod_uni)[term]
 
     assoc_start <- tibble(
       type = "Univariable",
       time = "Start",
       outcome = out,
       predictor = pred,
-      mean = exp(mean_est),
-      lower = exp(mean_est - qnorm(.975) * se_est),
-      upper = exp(mean_est + qnorm(.975) * se_est)
+      mean = exp(coef),
+      lower = exp(coef - qnorm(.975) * se),
+      upper = exp(coef + qnorm(.975) * se),
+      pvalue = pv
     )
 
     est_assoc <- rbind(est_assoc, assoc_start)
 
-    # estimate association at end of treatment
-    mod <- with(
-      df_imp_fup_wide,
-      glm(as.formula(paste0(out, "_End ~ site + ", out, "_Start +", pred))),
-      family = binomial()
-    )
+    iterm <- paste0("event_timeEnd:", term)
+    coef_et <- uni_sum[iterm, "results"]
+    se_et <- uni_sum[iterm, "se"]
+    coef_end <- coef + coef_et
+    icov <- vcov(uni_pool)[term, iterm]
+    se_end <- sqrt(se^2 + se_et^2 + 2 * icov)
 
-    coef_name <- paste0(pred, levels(df[[pred]])[2])
-    mod_sum <- summary(pool(mod))
-    mean_est <- mod_sum$estimate[mod_sum$term == coef_name]
-    se_est <- mod_sum$std.error[mod_sum$term == coef_name]
+    m1 <- with(df_imp_fup, glm(as.formula(
+      paste(out, "~ site + event_time")
+    ), family = binomial()))
+    m2 <- with(df_imp_fup, glm(as.formula(
+      paste(out, "~ site + event_time *", pred)
+    ), family = binomial()))
+    pv_end <- summary(D1(m2, m1))$comparisons$p.value
 
     assoc_end <- tibble(
       type = "Univariable",
       time = "End",
       outcome = out,
       predictor = pred,
-      mean = exp(mean_est),
-      lower = exp(mean_est - qnorm(.975) * se_est),
-      upper = exp(mean_est + qnorm(.975) * se_est)
+      mean = exp(coef_end),
+      lower = exp(coef_end - qnorm(.975) * se_end),
+      upper = exp(coef_end + qnorm(.975) * se_end),
+      pvalue = pv_end
     )
 
     est_assoc <- rbind(est_assoc, assoc_end)
   }
 }
 
-pred_names <- c(
+names(sub_outcomes) <- gsub("\n", " ", all_outcomes[sub_outcomes])
+sub_outcomes <- setNames(names(sub_outcomes), sub_outcomes)
+predictors <- setNames(c(
   "<25y",
   "Female",
   "HIV+",
-  "Clin. diagnosed",
-  "Relapse",
-  "Cavitation",
-  "MDR"
-)
-
-names(pred_names) <- predictors
-
-out_names <- gsub("\n", " ", all_outcomes)
+  "Relapse"
+), predictors)
 
 est_assoc <- est_assoc %>%
   mutate(
-    predictor = recode(predictor, !!!pred_names),
-    outcome = recode(outcome, !!!out_names),
+    predictor = recode(predictor, !!!predictors),
+    outcome = recode(outcome, !!!sub_outcomes),
     outcome = factor(
       outcome,
-      levels = out_names
+      levels = c(sub_outcomes)
     ),
     predictor = factor(
       predictor,
-      levels = rev(pred_names)
+      levels = rev(predictors)
     ),
     time = factor(
       paste(time, "of treatment"),
@@ -1526,7 +1535,113 @@ save_plot(
 )
 
 est_assoc %>%
-  mutate_if(is.numeric, round, 2) %>%
+  mutate_if(is.numeric, round, 3) %>%
   arrange(type, time, outcome, predictor) %>%
   writexl::write_xlsx("results/association.xlsx")
+```
+
+```{r}
+est_assoc <- est_assoc %>%
+  mutate(
+    mci = paste0(
+      round_k(mean, 2),
+      " (",
+      round_k(lower, 2), "-", round_k(upper, 2),
+      ")"
+    ),
+    pvalue_txt = round_k(pvalue, 3)
+  )
+
+predictor_levels <- matrix(c(
+  "Age>=25", "Age<25",
+  "Male", "Female",
+  "HIV-", "HIV+",
+  "New case", "Relapse case"
+), ncol = 2, byrow = TRUE)
+
+assoc_res <- matrix(
+  "",
+  nrow = (length(predictors) * 2 + 1) * length(sub_outcomes) + 2,
+  ncol = 7
+)
+
+for (t in paste(c("Start", "End"), "of treatment")) {
+  ki <- 0
+
+  assoc_res[1, ] <- c(
+    "Characteristic", "",
+    "Univariable analysis", "", "",
+    "Multivariable analysis", ""
+  )
+  assoc_res[2, ] <- c(
+    " ", "",
+    "OR (95%-CI)", "p-value", "",
+    "OR (95%-CI)", "p-value"
+  )
+
+  ki <- 2
+  for (k in 1:length(sub_outcomes)) {
+    ki <- ki + 1
+    assoc_res[ki, ] <- c(
+      sub_outcomes[k],
+      rep("", ncol(assoc_res) - 1)
+    )
+    for (i in 1:length(predictors)) {
+      ki <- ki + 1
+      assoc_res[ki, ] <- c(
+        paste0("   ", predictor_levels[i, 1]),
+        "",
+        "1 (reference)",
+        "", "",
+        "1 (reference)",
+        ""
+      )
+      ki <- ki + 1
+      assoc_res[ki, ] <- c(
+        paste0("   ", predictor_levels[i, 2]),
+        "",
+        est_assoc %>%
+          filter(
+            predictor == predictors[i],
+            type == "Univariable analysis",
+            outcome == sub_outcomes[k],
+            time == t
+          ) %>%
+          pull(mci),
+        est_assoc %>%
+          filter(
+            predictor == predictors[i],
+            type == "Univariable analysis",
+            outcome == sub_outcomes[k],
+            time == t
+          ) %>%
+          pull(pvalue_txt),
+        "",
+        est_assoc %>%
+          filter(
+            predictor == predictors[i],
+            type == "Multivariable analysis",
+            outcome == sub_outcomes[k],
+            time == t
+          ) %>%
+          pull(mci),
+        est_assoc %>%
+          filter(
+            predictor == predictors[i],
+            type == "Multivariable analysis",
+            outcome == sub_outcomes[k],
+            time == t
+          ) %>%
+          pull(pvalue_txt)
+      ) %>% unname()
+    }
+  }
+
+  write.table(
+    assoc_res,
+    file = paste0("results/tbl-association-", t, ".txt"),
+    row.names = FALSE, col.names = FALSE,
+    sep = ",", quote = FALSE
+  )
+}
 ```
