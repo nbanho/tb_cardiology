@@ -23,6 +23,8 @@ library(ggalluvial)
 library(mice)
 library(mitools)
 library(norm)
+library(miceafter)
+library(multcomp)
 source("utils/plotting.r")
 source("utils/tex.r")
 ```
@@ -42,6 +44,13 @@ all_outcomes <- c(
   "pericardial_calc" = "Pericardial\ncalcification",
   "constriction_sign" = "Signs of\nconstriction",
   "constriction" = "Definitive\nconstriction"
+)
+all_outcomes_nl <- c(
+  "pericard_effusion" = "Pericardial effusion",
+  "pericard_thickening" = "Pericardial thickening",
+  "pericardial_calc" = "Pericardial calcification",
+  "constriction_sign" = "Signs of constriction",
+  "constriction" = "Definitive constriction"
 )
 
 nrow(filter(df, event_time == "Start"))
@@ -730,7 +739,7 @@ summary(mod_comp)
 
 ## Treatment comparison
 
-### All patients
+### All patients - imputed analysis
 
 ```{r pericardial-changes}
 # subset primary outcomes
@@ -772,24 +781,67 @@ df_imp <- mice(
   seed = 12345
 )
 
-# estimate models
-mod_comp <- list()
+# compare proportions
+imp_res_all <- tibble(
+  outcome = c(),
+  prop_m_start = c(),
+  prop_l_start = c(),
+  prop_u_start = c(),
+  prop_m_end = c(),
+  prop_l_end = c(),
+  prop_u_end = c(),
+  prop_m_diff = c(),
+  prop_l_diff = c(),
+  prop_u_diff = c(),
+  pval_diff = c()
+)
+
+df_imp_long <- complete(df_imp, action = "long") %>%
+  mutate(event_time = as.integer(event_time) - 1)
+imp <- df2milist(df_imp_long, impvar = ".imp")
+imp_start <- df2milist(filter(df_imp_long, event_time == 0), impvar = ".imp")
+imp_end <- df2milist(filter(df_imp_long, event_time == 1), impvar = ".imp")
+
 for (out in names(all_outcomes)) {
-  mod_comp[[out]] <- with(
-    df_imp, glm(as.formula(paste0(out, " ~ event_time")),
-      family = binomial()
+  # estimate and compare proportions
+  p0 <- with(imp_start, expr = prop_wald(as.formula(paste(out, "~ 1"))))
+  p1 <- with(imp_end, expr = prop_wald(as.formula(paste(out, "~ 1"))))
+  pd <- with(imp, expr = propdiff_wald(as.formula(paste(out, "~ event_time"))))
+
+  # pool estimates
+  p0_pool <- pool_prop_wald(p0)
+  p1_pool <- pool_prop_wald(p1)
+  pd_pool <- pool_propdiff_wald(pd)
+
+  # pvalue
+  pd_stat <- data.frame(do.call(rbind, pd$statistics))
+  pd_scalars <- pool_scalar_RR(
+    pd_stat$Prop.diff, pd_stat$SE,
+    logit_trans = FALSE,
+    dfcom = pd_stat$dfcom[1],
+    statistic = TRUE
+  )
+
+  # append to results tibble
+  imp_res_all <- rbind(
+    imp_res_all,
+    tibble(
+      outcome = out,
+      prop_m_start = p0_pool[1, "Prop Wald"],
+      prop_l_start = p0_pool[1, "95%CI L"],
+      prop_u_start = p0_pool[1, "95%CI U"],
+      prop_m_end = p1_pool[1, "Prop Wald"],
+      prop_l_end = p1_pool[1, "95%CI L"],
+      prop_u_end = p1_pool[1, "95%CI U"],
+      prop_m_diff = pd_pool[1, "Prop diff Wald"],
+      prop_l_diff = pd_pool[1, "95 CI low"],
+      prop_u_diff = pd_pool[1, "95 CI high"],
+      pval_diff = pd_scalars$pval[1]
     )
   )
 }
 
-# p-value
-pvalue <- function(x) {
-  s <- summary(pool(x))
-  s$p.value[s$term == "event_timeEnd"]
-}
-
-pval <- sapply(mod_comp, pvalue)
-
+# edit pvalue
 write_pvalue <- function(x) {
   if (x < 0.01) {
     return("p<0.001")
@@ -798,61 +850,134 @@ write_pvalue <- function(x) {
   }
 }
 
-pval_txt <- sapply(pval, write_pvalue)
+imp_res_all$pval_diff_txt <- sapply(imp_res_all$pval_diff, write_pvalue)
+```
 
-# proportion of abnormalities
-df_imp_prop <- complete(df_imp, "long") %>%
-  dplyr::select(.imp, event_time, names(all_outcomes)) %>%
-  melt(c("event_time", ".imp")) %>%
-  group_by(.imp, variable, event_time) %>%
-  summarise(
-    n = sum(value),
-    N = n(),
-    p = 100 * n / N
-  ) %>%
-  ungroup() %>%
+### All patients - complete case analysis
+
+```{r pericardial-changes-fup-complete}
+# compare proportions
+cc_res_all <- tibble(
+  outcome = c(),
+  prop_m_start = c(),
+  prop_l_start = c(),
+  prop_u_start = c(),
+  prop_m_end = c(),
+  prop_l_end = c(),
+  prop_u_end = c(),
+  prop_m_diff = c(),
+  prop_l_diff = c(),
+  prop_u_diff = c(),
+  pval_diff = c()
+)
+
+cc_prop <- df_sub %>%
+  dplyr::select(event_time, names(all_outcomes)) %>%
+  melt(c("event_time")) %>%
   group_by(variable, event_time) %>%
   summarise(
-    n_m = mean(n),
-    n_s = sd(n),
-    p_m = mean(p),
-    p_s = sd(p)
+    n = sum(value, na.rm = TRUE),
+    N = sum(!is.na(value)),
+    p = n / N
   ) %>%
+  ungroup() %>%
+  arrange(variable, event_time)
+
+prop_ci <- function(p, N) {
+  se <- sqrt(p * (1 - p) / N)
+  l <- p - qnorm(0.975) * se
+  u <- p + qnorm(0.975) * se
+  return(c(l, u))
+}
+
+for (out in names(all_outcomes)) {
+  # estimate and compare proportions
+  p0_N <- cc_prop$N[cc_prop$variable == out & cc_prop$event_time == "Start"]
+  p1_N <- cc_prop$N[cc_prop$variable == out & cc_prop$event_time == "End"]
+  pd <- prop.test(
+    x = cc_prop$n[cc_prop$variable == out],
+    n = cc_prop$N[cc_prop$variable == out],
+    correct = FALSE
+  )
+
+  # append to results tibble
+  cc_res_all <- rbind(
+    cc_res_all,
+    tibble(
+      outcome = out,
+      prop_m_start = pd$estimate[1],
+      prop_l_start = prop_ci(pd$estimate[1], p0_N)[1],
+      prop_u_start = prop_ci(pd$estimate[1], p0_N)[2],
+      prop_m_end = pd$estimate[2],
+      prop_l_end = prop_ci(pd$estimate[2], p1_N)[1],
+      prop_u_end = prop_ci(pd$estimate[2], p1_N)[2],
+      prop_m_diff = pd$estimate[2] - pd$estimate[1],
+      prop_l_diff = pd$conf.int[1],
+      prop_u_diff = pd$conf.int[2],
+      pval_diff = pd$p.value
+    )
+  )
+}
+
+# formatting
+cc_res_all$pval_diff_txt <- sapply(cc_res_all$pval_diff, write_pvalue)
+
+# plot - data
+cc_res_all_pldat <- cc_res_all %>%
   mutate(
-    variable = recode(variable, !!!all_outcomes),
-    variable = factor(
-      variable,
+    outcome = recode(outcome, !!!all_outcomes),
+    outcome = factor(
+      outcome,
       levels = all_outcomes
     )
   ) %>%
-  arrange(variable)
+  dplyr::select(outcome, matches("_start"), matches("_end")) %>%
+  pivot_longer(
+    cols = -outcome,
+    names_to = "variable",
+    values_to = "value"
+  ) %>%
+  mutate(
+    event_time = ifelse(grepl("start", variable), "Start", "End"),
+    event_time = factor(
+      event_time,
+      levels = c("Start", "End")
+    ),
+    variable = gsub("_start|_end", "", variable)
+  ) %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = value
+  ) %>%
+  arrange(outcome, event_time) %>%
+  mutate(prop_l = ifelse(prop_l < 0, 0, prop_l), prop_u = ifelse(prop_u > 1, 1, prop_u))
 
-pval_ypos <- df_imp_prop %>%
-  mutate(p_pos = p_m + p_s) %>%
-  group_by(variable) %>%
+# plot - position of pvalues on y-axis
+pval_ypos <- cc_res_all_pldat %>%
+  group_by(outcome) %>%
   summarize(
-    p_pos = max(p_pos)
+    p_pos = max(prop_u)
   ) %>%
   ungroup() %>%
-  mutate(p_pos = p_pos + 2.5) %>%
-  arrange(variable) %>%
+  mutate(p_pos = p_pos + 0.025) %>%
+  arrange(outcome) %>%
   pull(p_pos)
 
 # plot
-pl_comp <- df_imp_prop %>%
-  ggplot(aes(x = variable, fill = event_time, y = p_m)) +
+pl_comp <- cc_res_all_pldat %>%
+  ggplot(aes(x = outcome, fill = event_time, y = prop_m)) +
   geom_bar(
     stat = "identity",
     position = position_dodge(width = .66),
     width = .5
   ) +
   geom_errorbar(
-    aes(ymin = p_m - p_s, ymax = p_m + p_s),
+    aes(ymin = prop_l, ymax = prop_u),
     position = position_dodge(width = .66),
     width = .2
   ) +
   ggsignif::geom_signif(
-    annotations = pval_txt,
+    annotations = cc_res_all$pval_diff_txt,
     y_position = pval_ypos,
     xmin = c(.75, 1.75, 2.75, 3.75, 4.75),
     xmax = c(1.25, 2.25, 3.25, 4.25, 5.25),
@@ -860,6 +985,7 @@ pl_comp <- df_imp_prop %>%
   ) +
   scale_y_continuous(
     breaks = scales::breaks_pretty(5),
+    labels = function(x) scales::percent(x, suffix = ""),
     expand = expansion(mult = c(0, 0.025))
   ) +
   scale_x_discrete(labels = all_outcomes) +
@@ -889,51 +1015,7 @@ save_plot(
 )
 ```
 
-### All patients - complete case analysis
-
-```{r pericardial-changes-fup-complete}
-# estimate models
-mod_comp_cpl <- list()
-for (out in names(all_outcomes)) {
-  mod_comp_cpl[[out]] <- with(
-    df_sub, glm(as.formula(paste0(out, " ~ event_time")),
-      family = binomial()
-    )
-  )
-}
-
-# p-value
-pvalue_unpool <- function(x) {
-  s <- coef(summary(x))[, 4]
-  s["event_timeEnd"]
-}
-pval_cpl <- sapply(mod_comp_cpl, pvalue_unpool)
-pval_txt_cpl <- sapply(pval_cpl, write_pvalue)
-
-# proportion of abnormalities
-df_cpl_prop <- df_sub %>%
-  dplyr::select(event_time, names(all_outcomes)) %>%
-  melt(c("event_time")) %>%
-  group_by(variable, event_time) %>%
-  summarise(
-    n = sum(value, na.rm = TRUE),
-    N = sum(!is.na(value)),
-    p = round(100 * n / N),
-    nd = sum(is.na(value)),
-    p_nd = round(100 * nd / n())
-  ) %>%
-  ungroup() %>%
-  mutate(
-    variable = recode(variable, !!!all_outcomes),
-    variable = factor(
-      variable,
-      levels = all_outcomes
-    )
-  ) %>%
-  arrange(variable)
-```
-
-### FUP Patients - paired analysis
+### FUP Patients - imputed analysis
 
 ```{r pericardial-changes-fup}
 # subset primary outcomes
@@ -970,7 +1052,6 @@ df_sub_fup <- df %>%
     )
   )
 
-
 # impute data
 df_imp_fup <- mice(
   data = dplyr::select(df_sub_fup, -record_id),
@@ -978,301 +1059,196 @@ df_imp_fup <- mice(
   seed = 12345
 )
 
-# estimate models
-mod_comp_fup <- list()
+# compare proportions
+imp_res_fup <- tibble(
+  outcome = c(),
+  prop_m_start = c(),
+  prop_l_start = c(),
+  prop_u_start = c(),
+  prop_m_end = c(),
+  prop_l_end = c(),
+  prop_u_end = c(),
+  prop_m_diff = c(),
+  prop_l_diff = c(),
+  prop_u_diff = c(),
+  pval_diff = c()
+)
+
+df_imp_fup_long <- complete(df_imp_fup, action = "long") %>%
+  mutate(event_time = as.integer(event_time) - 1)
+imp_fup <- df2milist(df_imp_fup_long, impvar = ".imp")
+imp_fup_start <- df2milist(filter(df_imp_fup_long, event_time == 0), impvar = ".imp")
+imp_fup_end <- df2milist(filter(df_imp_fup_long, event_time == 1), impvar = ".imp")
+
 for (out in names(all_outcomes)) {
-  mod_comp_fup[[out]] <- with(
-    df_imp_fup, glm(as.formula(paste0(out, " ~ event_time")),
-      family = binomial()
+  # estimate and compare proportions
+  p0 <- with(imp_fup_start, expr = prop_wald(as.formula(paste(out, "~ 1"))))
+  p1 <- with(imp_fup_end, expr = prop_wald(as.formula(paste(out, "~ 1"))))
+  pd <- with(imp_fup, expr = propdiff_wald(as.formula(paste(out, "~ event_time"))))
+
+  # pool estimates
+  p0_pool <- pool_prop_wald(p0)
+  p1_pool <- pool_prop_wald(p1)
+  pd_pool <- pool_propdiff_wald(pd)
+
+  # pvalue
+  pd_stat <- data.frame(do.call(rbind, pd$statistics))
+  pd_scalars <- pool_scalar_RR(
+    pd_stat$Prop.diff, pd_stat$SE,
+    logit_trans = FALSE,
+    dfcom = pd_stat$dfcom[1],
+    statistic = TRUE
+  )
+
+  # append to results tibble
+  imp_res_fup <- rbind(
+    imp_res_fup,
+    tibble(
+      outcome = out,
+      prop_m_start = p0_pool[1, "Prop Wald"],
+      prop_l_start = p0_pool[1, "95%CI L"],
+      prop_u_start = p0_pool[1, "95%CI U"],
+      prop_m_end = p1_pool[1, "Prop Wald"],
+      prop_l_end = p1_pool[1, "95%CI L"],
+      prop_u_end = p1_pool[1, "95%CI U"],
+      prop_m_diff = pd_pool[1, "Prop diff Wald"],
+      prop_l_diff = pd_pool[1, "95 CI low"],
+      prop_u_diff = pd_pool[1, "95 CI high"],
+      pval_diff = pd_scalars$pval[1]
     )
   )
 }
 
-# p-value
-pval_fup <- sapply(mod_comp_fup, pvalue)
-pval_txt_fup <- sapply(pval_fup, write_pvalue)
-
-# proportion of abnormalities
-df_imp_fup_prop <- complete(df_imp_fup, "long") %>%
-  dplyr::select(.imp, event_time, names(all_outcomes)) %>%
-  melt(c("event_time", ".imp")) %>%
-  group_by(.imp, variable, event_time) %>%
-  summarise(
-    n = sum(value),
-    N = n(),
-    p = 100 * n / N
-  ) %>%
-  ungroup() %>%
-  group_by(variable, event_time) %>%
-  summarise(
-    n_m = mean(n),
-    n_s = sd(n),
-    p_m = mean(p),
-    p_s = sd(p)
-  ) %>%
-  mutate(
-    variable = recode(variable, !!!all_outcomes),
-    variable = factor(
-      variable,
-      levels = all_outcomes
-    )
-  ) %>%
-  arrange(variable)
-
-# p-value position in plot
-pval_ypos_fup <- df_imp_fup_prop %>%
-  mutate(p_pos = p_m + p_s) %>%
-  group_by(variable) %>%
-  summarize(
-    p_pos = max(p_pos)
-  ) %>%
-  ungroup() %>%
-  mutate(p_pos = p_pos + 2.5) %>%
-  arrange(variable) %>%
-  pull(p_pos)
-
-# plot
-pl_comp_fup <- df_imp_fup_prop %>%
-  ggplot(aes(x = variable, fill = event_time, y = p_m)) +
-  geom_bar(
-    stat = "identity",
-    position = position_dodge(width = .66),
-    width = .5
-  ) +
-  geom_errorbar(
-    aes(ymin = p_m - p_s, ymax = p_m + p_s),
-    position = position_dodge(width = .66),
-    width = .2
-  ) +
-  ggsignif::geom_signif(
-    annotations = pval_txt_fup,
-    y_position = pval_ypos_fup,
-    xmin = c(.75, 1.75, 2.75, 3.75, 4.75),
-    xmax = c(1.25, 2.25, 3.25, 4.25, 5.25),
-    textsize = 8 / cm(1)
-  ) +
-  scale_y_continuous(
-    breaks = scales::breaks_pretty(5),
-    expand = expansion(mult = c(0, 0.025))
-  ) +
-  scale_x_discrete(labels = all_outcomes) +
-  scale_fill_manual(
-    values = c(
-      wes_palette("FrenchDispatch")[2],
-      wes_palette("Moonrise3")[2]
-    )
-  ) +
-  coord_cartesian(ylim = c(0, NA), clip = "off") +
-  labs(y = "Proportion (%)", x = "Pericardial changes") +
-  theme_custom(8) +
-  theme(
-    legend.position = "bottom", legend.title = element_blank(),
-    axis.title.x = element_blank(),
-    plot.title = element_text(face = 1, size = 8, margin = margin(b = 20)),
-    strip.text = element_text(face = 2),
-    legend.key.height = unit(0.3, "cm"),
-    legend.key.width = unit(0.5, "cm"),
-    plot.margin = margin(l = 20, t = 5.5, b = 5.5, r = 5.5)
-  )
-
-save_plot(
-  pl_comp_fup,
-  pdf_file = "results/pericardial-changes-only-follow-up.pdf",
-  w = 16, h = 8
-)
+# formatting
+imp_res_fup$pval_diff_txt <- sapply(imp_res_fup$pval_diff, write_pvalue)
 ```
 
-### FUP Patients - paired complete case analysis
+### FUP Patients - complete case analysis
 
 ```{r pericardial-changes-fup-complete}
-# estimate models
-mod_comp_fup_cpl <- list()
-for (out in names(all_outcomes)) {
-  mod_comp_fup_cpl[[out]] <- with(
-    df_sub_fup, glm(as.formula(paste0(out, " ~ event_time")),
-      family = binomial()
-    )
-  )
-}
+# compare proportions
+cc_res_fup <- tibble(
+  outcome = c(),
+  prop_m_start = c(),
+  prop_l_start = c(),
+  prop_u_start = c(),
+  prop_m_end = c(),
+  prop_l_end = c(),
+  prop_u_end = c(),
+  prop_m_diff = c(),
+  prop_l_diff = c(),
+  prop_u_diff = c(),
+  pval_diff = c()
+)
 
-# p-value
-pval_fup_cpl <- sapply(mod_comp_fup_cpl, pvalue_unpool)
-pval_txt_fup_cpl <- sapply(pval_fup_cpl, write_pvalue)
-
-# proportion of abnormalities
-df_fup_cpl_prop <- df_sub_fup %>%
+cc_fup_prop <- df_sub_fup %>%
   dplyr::select(event_time, names(all_outcomes)) %>%
   melt(c("event_time")) %>%
   group_by(variable, event_time) %>%
   summarise(
     n = sum(value, na.rm = TRUE),
     N = sum(!is.na(value)),
-    p = round(100 * n / N),
-    nd = sum(is.na(value)),
-    p_nd = round(100 * nd / n())
+    p = n / N
   ) %>%
   ungroup() %>%
-  mutate(
-    variable = recode(variable, !!!all_outcomes),
-    variable = factor(
-      variable,
-      levels = all_outcomes
-    )
-  ) %>%
-  arrange(variable)
+  arrange(variable, event_time)
 
-df_fup_cpl_prop
+for (out in names(all_outcomes)) {
+  # estimate and compare proportions
+  p0_N <- cc_fup_prop$N[cc_fup_prop$variable == out & cc_fup_prop$event_time == "Start"]
+  p1_N <- cc_fup_prop$N[cc_fup_prop$variable == out & cc_fup_prop$event_time == "End"]
+  pd <- prop.test(
+    x = cc_fup_prop$n[cc_fup_prop$variable == out],
+    n = cc_fup_prop$N[cc_fup_prop$variable == out],
+    correct = FALSE
+  )
+
+  # append to results tibble
+  cc_res_fup <- rbind(
+    cc_res_fup,
+    tibble(
+      outcome = out,
+      prop_m_start = pd$estimate[1],
+      prop_l_start = prop_ci(pd$estimate[1], p0_N)[1],
+      prop_u_start = prop_ci(pd$estimate[1], p0_N)[2],
+      prop_m_end = pd$estimate[2],
+      prop_l_end = prop_ci(pd$estimate[2], p1_N)[1],
+      prop_u_end = prop_ci(pd$estimate[2], p1_N)[2],
+      prop_m_diff = pd$estimate[2] - pd$estimate[1],
+      prop_l_diff = pd$conf.int[1],
+      prop_u_diff = pd$conf.int[2],
+      pval_diff = pd$p.value
+    )
+  )
+}
+
+# formatting
+cc_res_fup$pval_diff_txt <- sapply(cc_res_fup$pval_diff, write_pvalue)
 ```
 
-### Overiew table
+### Summary table
 
 ```{r overview-table}
-out_names <- unname(gsub("\n", " ", all_outcomes))
-
-prop_tbl_cpl_header <- rbind(
-  c("", "", "Start of treatment", "", "", "End of treatment", "", "", "Comparison"),
-  c("Abnormality", "", "n (%)", "ND (%)", "", "n (%)", "ND (%)", "", "p-value")
-)
-
-prop_tbl_cpl_A_name <- paste0(
-  "Panel A: Paired analysis of patients with follow-up visits",
-  " (N=", n_distinct(df_sub_fup$record_id), ")"
-)
-
-prop_tbl_cpl_A <- cbind(
-  out_names,
-  rep("", length(out_names)),
-  paste0(
-    pull(filter(df_fup_cpl_prop, event_time == "Start"), n), " (",
-    pull(filter(df_fup_cpl_prop, event_time == "Start"), p), ")"
-  ),
-  paste0(
-    pull(filter(df_fup_cpl_prop, event_time == "Start"), nd), " (",
-    pull(filter(df_fup_cpl_prop, event_time == "Start"), p_nd), ")"
-  ),
-  rep("", length(out_names)),
-  paste0(
-    pull(filter(df_fup_cpl_prop, event_time == "End"), n), " (",
-    pull(filter(df_fup_cpl_prop, event_time == "End"), p), ")"
-  ),
-  paste0(
-    pull(filter(df_fup_cpl_prop, event_time == "End"), nd), " (",
-    pull(filter(df_fup_cpl_prop, event_time == "End"), p_nd), ")"
-  ),
-  rep("", length(out_names)),
-  gsub("=", "", gsub("p", "", c(unname(pval_txt_fup_cpl)), fixed = TRUE))
-)
-
-prop_tbl_cpl_B_name <- paste0(
-  "Panel B: Cross-sectional analysis of all patients",
-  " (N=", n_distinct(df_sub$record_id), ")"
-)
-
-prop_tbl_cpl_B <- cbind(
-  out_names,
-  rep("", length(out_names)),
-  paste0(
-    pull(filter(df_cpl_prop, event_time == "Start"), n), " (",
-    pull(filter(df_cpl_prop, event_time == "Start"), p), ")"
-  ),
-  paste0(
-    pull(filter(df_cpl_prop, event_time == "Start"), nd), " (",
-    pull(filter(df_cpl_prop, event_time == "Start"), p_nd), ")"
-  ),
-  rep("", length(out_names)),
-  paste0(
-    pull(filter(df_cpl_prop, event_time == "End"), n), " (",
-    pull(filter(df_cpl_prop, event_time == "End"), p), ")"
-  ),
-  paste0(
-    pull(filter(df_cpl_prop, event_time == "End"), nd), " (",
-    pull(filter(df_cpl_prop, event_time == "End"), p_nd), ")"
-  ),
-  rep("", length(out_names)),
-  gsub("=", "", gsub("p", "", c(unname(pval_txt_cpl)), fixed = TRUE))
-)
-
-prop_tbl_cpl <- rbind(
-  prop_tbl_cpl_header,
-  c(prop_tbl_cpl_A_name, rep("", 8)),
-  prop_tbl_cpl_A,
-  rep("", 9),
-  c(prop_tbl_cpl_B_name, rep("", 8)),
-  prop_tbl_cpl_B
-)
-
-write.table(
-  prop_tbl_cpl,
-  file = "results/tbl-pericardial-changes-complete-case-analysis.txt",
-  row.names = FALSE, col.names = FALSE,
-  sep = ",", quote = FALSE
-)
-
 prop_tbl_header <- rbind(
-  c("", "", "Start of treatment", "", "", "End of treatment", "", "", "Comparison"),
-  c("Abnormality", "", "n (SD)", "% (SD)", "", "n (SD)", "% (SD)", "", "p-value")
+  c("", "", "Start of treatment", "", "End of treatment", "", "Comparison", ""),
+  c("Abnormality", "", "Prop. in % (95%-CI)", "", "Prop. in % (95%-CI)", "", "Diff. (95%-CI)", "p-value")
 )
 
-prop_tbl_A <- cbind(
-  out_names,
-  rep("", length(out_names)),
-  paste0(
-    round(pull(filter(df_imp_fup_prop, event_time == "Start"), n_m)), " (",
-    round(pull(filter(df_imp_fup_prop, event_time == "Start"), n_s), 1), ")"
-  ),
-  paste0(
-    round(pull(filter(df_imp_fup_prop, event_time == "Start"), p_m)), " (",
-    round(pull(filter(df_imp_fup_prop, event_time == "Start"), p_s), 1), ")"
-  ),
-  rep("", length(out_names)),
-  paste0(
-    round(pull(filter(df_imp_fup_prop, event_time == "End"), n_m)), " (",
-    round(pull(filter(df_imp_fup_prop, event_time == "End"), n_s), 1), ")"
-  ),
-  paste0(
-    round(pull(filter(df_imp_fup_prop, event_time == "End"), p_m)), " (",
-    round(pull(filter(df_imp_fup_prop, event_time == "End"), p_s), 1), ")"
-  ),
-  rep("", length(out_names)),
-  gsub("=", "", gsub("p", "", c(unname(pval_txt_fup)), fixed = TRUE))
+prop_tbl_panels <- c(
+  "Panel A: Complete case analysis of all patients",
+  "Panel B: Imputed data analysis of all patients",
+  "Panel C: Complete case analysis of patients with follow-up visits",
+  "Panel D: Imputed data analysis of patients with follow-up visits"
 )
+prop_tbl_panels <- lapply(prop_tbl_panels, function(x) {
+  c(x, rep("", 7))
+})
 
-prop_tbl_B <- cbind(
-  out_names,
-  rep("", length(out_names)),
-  paste0(
-    round(pull(filter(df_imp_prop, event_time == "Start"), n_m)), " (",
-    round(pull(filter(df_imp_prop, event_time == "Start"), n_s), 1), ")"
-  ),
-  paste0(
-    round(pull(filter(df_imp_prop, event_time == "Start"), p_m)), " (",
-    round(pull(filter(df_imp_prop, event_time == "Start"), p_s), 1), ")"
-  ),
-  rep("", length(out_names)),
-  paste0(
-    round(pull(filter(df_imp_prop, event_time == "End"), n_m)), " (",
-    round(pull(filter(df_imp_prop, event_time == "End"), n_s), 1), ")"
-  ),
-  paste0(
-    round(pull(filter(df_imp_prop, event_time == "End"), p_m)), " (",
-    round(pull(filter(df_imp_prop, event_time == "End"), p_s), 1), ")"
-  ),
-  rep("", length(out_names)),
-  gsub("=", "", gsub("p", "", c(unname(pval_txt)), fixed = TRUE))
+res <- list(
+  cc_res_all, imp_res_all,
+  cc_res_fup, imp_res_fup
 )
+res <- lapply(res, function(x) {
+  x %>%
+    mutate(
+      outcome = recode(outcome, !!!all_outcomes_nl),
+      outcome = factor(
+        outcome,
+        levels = all_outcomes_nl
+      ),
+      across(c(-outcome, -pval_diff, -pval_diff_txt), ~ round(.x * 100)),
+      pval_diff_txt = ifelse(pval_diff < 0.001, "<0.001", paste0("", round_k(pval_diff, 2)))
+    ) %>%
+    rowwise() %>%
+    mutate(
+      space_col0 = "",
+      prop_start = paste0(prop_m_start, " (", prop_l_start, " – ", prop_u_start, ")"),
+      space_col1 = "",
+      prop_end = paste0(prop_m_end, " (", prop_l_end, " – ", prop_u_end, ")"),
+      pace_col2 = "",
+      prop_diff = paste0(prop_m_diff, " (", prop_l_diff, " – ", prop_u_diff, ")"),
+    ) %>%
+    ungroup() %>%
+    dplyr::select(
+      outcome, space_col0, prop_start, space_col1, prop_end, pace_col2, prop_diff, pval_diff_txt
+    )
+})
 
 prop_tbl <- rbind(
   prop_tbl_header,
-  c(prop_tbl_cpl_A_name, rep("", 8)),
-  prop_tbl_A,
-  rep("", 9),
-  c(prop_tbl_cpl_B_name, rep("", 8)),
-  prop_tbl_B
+  prop_tbl_panels[[1]],
+  as.matrix(res[[1]]),
+  prop_tbl_panels[[2]],
+  as.matrix(res[[2]]),
+  prop_tbl_panels[[3]],
+  as.matrix(res[[3]]),
+  prop_tbl_panels[[4]],
+  as.matrix(res[[4]])
 )
 
 write.table(
   prop_tbl,
-  file = "results/tbl-pericardial-changes-imputed-analysis.txt",
+  file = "results/tbl-pericardial-changes.txt",
   row.names = FALSE, col.names = FALSE,
   sep = ",", quote = FALSE
 )
@@ -1281,8 +1257,251 @@ write.table(
 
 ## Association with patient characteristics
 
-```{r association-baseline}
-# estimate univariable associations
+### Complete case analysis
+
+```{r association-complete}
+cc_assoc <- tibble(
+  type = character(),
+  time = character(),
+  outcome = character(),
+  predictor = character(),
+  mean = numeric(),
+  lower = numeric(),
+  upper = numeric(),
+  pvalue = numeric()
+)
+
+sub_outcomes <- c(
+  "pericard_effusion",
+  "pericard_thickening",
+  "constriction_sign"
+)
+
+predictors <- c(
+  "age_cat25",
+  "sex",
+  "hiv",
+  "tbd_pat_cat"
+)
+pred_cats <- paste0(
+  predictors,
+  sapply(predictors, function(x) levels(df[[x]])[2])
+)
+names(pred_cats) <- predictors
+pred_cats_int <- paste0("event_timeEnd:", pred_cats)
+names(pred_cats_int) <- predictors
+
+for (out in sub_outcomes) {
+  # multivariable model
+  form <- as.formula(paste0(
+    out, " ~ site + ",
+    paste("event_time *", predictors, collapse = " + ")
+  ))
+  mod <- glm(form, data = df_sub, family = binomial())
+
+  # association with baseline
+  coef_start <- coef(mod)[pred_cats]
+  se_start <- summary(mod)$coefficients[, "Std. Error"][pred_cats]
+  pval_start <- summary(mod)$coefficients[, "Pr(>|z|)"][pred_cats]
+
+  # association with end of treatment
+  coef_end <- numeric()
+  se_end <- numeric()
+  pval_end <- numeric()
+  for (i in 1:length(pred_cats)) {
+    lin_hyp <- glht(
+      model = mod,
+      linfct = paste0(pred_cats[i], " + ", pred_cats_int[i], " = 0")
+    )
+    coef_end[i] <- summary(lin_hyp)$test$coefficients
+    se_end[i] <- summary(lin_hyp)$test$sigma
+    pval_end[i] <- summary(lin_hyp)$test$pvalues
+  }
+
+  cc_assoc <- rbind(
+    cc_assoc,
+    tibble(
+      type = "Multivariable",
+      time = "Start",
+      outcome = out,
+      predictor = predictors,
+      mean = exp(coef_start),
+      lower = exp(coef_start - qnorm(.975) * se_start),
+      upper = exp(coef_start + qnorm(.975) * se_start),
+      pvalue = pval_start
+    ),
+    tibble(
+      type = "Multivariable",
+      time = "End",
+      outcome = out,
+      predictor = predictors,
+      mean = exp(coef_end),
+      lower = exp(coef_end - qnorm(.975) * se_end),
+      upper = exp(coef_end + qnorm(.975) * se_end),
+      pvalue = pval_end
+    )
+  )
+
+  for (pred in predictors) {
+    # univariable model
+    uni_form <- as.formula(
+      paste0(
+        out, " ~ site + ",
+        paste("event_time *", pred, collapse = " + ")
+      )
+    )
+    uni_mod <- glm(uni_form, data = df_sub, family = binomial())
+
+    # association with baseline
+    coef_start <- coef(uni_mod)[pred_cats[pred]]
+    se_start <- summary(uni_mod)$coefficients[, "Std. Error"][pred_cats[pred]]
+    pval_start <- summary(uni_mod)$coefficients[, "Pr(>|z|)"][pred_cats[pred]]
+
+    # association with end of treatment
+    lin_hyp <- glht(
+      model = uni_mod,
+      linfct = paste0(pred_cats[pred], " + ", pred_cats_int[pred], " = 0")
+    )
+    coef_end <- summary(lin_hyp)$test$coefficients
+    se_end <- summary(lin_hyp)$test$sigma
+    pval_end <- summary(lin_hyp)$test$pvalues
+
+    cc_assoc <- rbind(
+      cc_assoc,
+      tibble(
+        type = "Univariable",
+        time = "Start",
+        outcome = out,
+        predictor = pred,
+        mean = exp(coef_start),
+        lower = exp(coef_start - qnorm(.975) * se_start),
+        upper = exp(coef_start + qnorm(.975) * se_start),
+        pvalue = pval_start
+      ),
+      tibble(
+        type = "Univariable",
+        time = "End",
+        outcome = out,
+        predictor = pred,
+        mean = exp(coef_end),
+        lower = exp(coef_end - qnorm(.975) * se_end),
+        upper = exp(coef_end + qnorm(.975) * se_end),
+        pvalue = pval_end
+      )
+    )
+  }
+}
+```
+
+```{r, association-table}
+cc_assoc <- cc_assoc %>%
+  mutate(
+    mci = paste0(
+      round_k(mean, 2),
+      " (",
+      round_k(lower, 2), " – ", round_k(upper, 2),
+      ")"
+    ),
+    pvalue_txt = ifelse(pvalue < 0.01, "<0.01", paste0("", round_k(pvalue, 2)))
+  )
+
+predictor_levels <- matrix(c(
+  "Age>=25", "Age<25",
+  "Male", "Female",
+  "HIV-", "HIV+",
+  "New case", "Relapse case"
+), ncol = 2, byrow = TRUE)
+
+assoc_res <- matrix(
+  "",
+  nrow = (length(predictors) * 2 + 1) * length(sub_outcomes) + 2,
+  ncol = 7
+)
+
+for (t in c("Start", "End")) {
+  ki <- 0
+
+  assoc_res[1, ] <- c(
+    "Characteristic", "",
+    "Univariable analysis", "", "",
+    "Multivariable analysis", ""
+  )
+  assoc_res[2, ] <- c(
+    " ", "",
+    "OR (95%-CI)", "p-value", "",
+    "OR (95%-CI)", "p-value"
+  )
+
+  ki <- 2
+  for (k in 1:length(sub_outcomes)) {
+    ki <- ki + 1
+    assoc_res[ki, ] <- c(
+      all_outcomes_nl[sub_outcomes[k]],
+      rep("", ncol(assoc_res) - 1)
+    )
+    for (i in 1:length(predictors)) {
+      ki <- ki + 1
+      assoc_res[ki, ] <- c(
+        paste0("   ", predictor_levels[i, 1]),
+        "",
+        "1 (reference)",
+        "", "",
+        "1 (reference)",
+        ""
+      )
+      ki <- ki + 1
+      assoc_res[ki, ] <- unname(c(
+        paste0("   ", predictor_levels[i, 2]),
+        "",
+        cc_assoc %>%
+          filter(
+            predictor == predictors[i],
+            type == "Univariable",
+            outcome == sub_outcomes[k],
+            time == t
+          ) %>%
+          pull(mci),
+        cc_assoc %>%
+          filter(
+            predictor == predictors[i],
+            type == "Univariable",
+            outcome == sub_outcomes[k],
+            time == t
+          ) %>%
+          pull(pvalue_txt),
+        "",
+        cc_assoc %>%
+          filter(
+            predictor == predictors[i],
+            type == "Multivariable",
+            outcome == sub_outcomes[k],
+            time == t
+          ) %>%
+          pull(mci),
+        cc_assoc %>%
+          filter(
+            predictor == predictors[i],
+            type == "Multivariable",
+            outcome == sub_outcomes[k],
+            time == t
+          ) %>%
+          pull(pvalue_txt)
+      ))
+    }
+  }
+  write.table(
+    assoc_res,
+    file = paste0("results/tbl-association-", t, ".txt"),
+    row.names = FALSE, col.names = FALSE,
+    sep = ",", quote = FALSE
+  )
+}
+```
+
+### Imputed data
+
+```{r association-imputed}
+# associations results
 est_assoc <- tibble(
   type = character(),
   time = character(),
@@ -1538,110 +1757,4 @@ est_assoc %>%
   mutate_if(is.numeric, round, 3) %>%
   arrange(type, time, outcome, predictor) %>%
   writexl::write_xlsx("results/association.xlsx")
-```
-
-```{r}
-est_assoc <- est_assoc %>%
-  mutate(
-    mci = paste0(
-      round_k(mean, 2),
-      " (",
-      round_k(lower, 2), "-", round_k(upper, 2),
-      ")"
-    ),
-    pvalue_txt = round_k(pvalue, 3)
-  )
-
-predictor_levels <- matrix(c(
-  "Age>=25", "Age<25",
-  "Male", "Female",
-  "HIV-", "HIV+",
-  "New case", "Relapse case"
-), ncol = 2, byrow = TRUE)
-
-assoc_res <- matrix(
-  "",
-  nrow = (length(predictors) * 2 + 1) * length(sub_outcomes) + 2,
-  ncol = 7
-)
-
-for (t in paste(c("Start", "End"), "of treatment")) {
-  ki <- 0
-
-  assoc_res[1, ] <- c(
-    "Characteristic", "",
-    "Univariable analysis", "", "",
-    "Multivariable analysis", ""
-  )
-  assoc_res[2, ] <- c(
-    " ", "",
-    "OR (95%-CI)", "p-value", "",
-    "OR (95%-CI)", "p-value"
-  )
-
-  ki <- 2
-  for (k in 1:length(sub_outcomes)) {
-    ki <- ki + 1
-    assoc_res[ki, ] <- c(
-      sub_outcomes[k],
-      rep("", ncol(assoc_res) - 1)
-    )
-    for (i in 1:length(predictors)) {
-      ki <- ki + 1
-      assoc_res[ki, ] <- c(
-        paste0("   ", predictor_levels[i, 1]),
-        "",
-        "1 (reference)",
-        "", "",
-        "1 (reference)",
-        ""
-      )
-      ki <- ki + 1
-      assoc_res[ki, ] <- c(
-        paste0("   ", predictor_levels[i, 2]),
-        "",
-        est_assoc %>%
-          filter(
-            predictor == predictors[i],
-            type == "Univariable analysis",
-            outcome == sub_outcomes[k],
-            time == t
-          ) %>%
-          pull(mci),
-        est_assoc %>%
-          filter(
-            predictor == predictors[i],
-            type == "Univariable analysis",
-            outcome == sub_outcomes[k],
-            time == t
-          ) %>%
-          pull(pvalue_txt),
-        "",
-        est_assoc %>%
-          filter(
-            predictor == predictors[i],
-            type == "Multivariable analysis",
-            outcome == sub_outcomes[k],
-            time == t
-          ) %>%
-          pull(mci),
-        est_assoc %>%
-          filter(
-            predictor == predictors[i],
-            type == "Multivariable analysis",
-            outcome == sub_outcomes[k],
-            time == t
-          ) %>%
-          pull(pvalue_txt)
-      ) %>% unname()
-    }
-  }
-
-  write.table(
-    assoc_res,
-    file = paste0("results/tbl-association-", t, ".txt"),
-    row.names = FALSE, col.names = FALSE,
-    sep = ",", quote = FALSE
-  )
-}
 ```
