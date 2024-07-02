@@ -44,7 +44,18 @@ echo <- read.csv("data-raw/Z519TBSRNEchoStudy_DATA_2024-02-19_1650.csv") %>%
               rv_rad_dysf,
               tr_pgmax,
               ra_dilation,
-              cvp
+              cvp,
+              note,
+              mv_e_a,
+              mv_dec_time,
+              dilated_ivc,
+              ivc_low_respiratory_change,
+              abnormal_mitral_inflow,
+              ivs_shift,
+              e_septal,
+              e_lateral,
+              septal_bounce,
+              note
        ) %>%
        rename(event_time = redcap_event_name) %>%
        mutate(

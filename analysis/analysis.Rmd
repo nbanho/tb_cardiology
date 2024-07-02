@@ -29,6 +29,24 @@ source("utils/plotting.r")
 source("utils/tex.r")
 ```
 
+```{r functions}
+# ci of proportion
+prop_ci <- function(p, N) {
+  se <- sqrt(p * (1 - p) / N)
+  l <- p - qnorm(0.975) * se
+  u <- p + qnorm(0.975) * se
+  return(c(l, u))
+}
+
+# edit pvalue
+write_pvalue <- function(x) {
+  if (x < 0.01) {
+    return("p<0.001")
+  } else {
+    return(paste0("p=", round_k(x, 2)))
+  }
+}
+```
 
 ## Data
 
@@ -841,15 +859,6 @@ for (out in names(all_outcomes)) {
   )
 }
 
-# edit pvalue
-write_pvalue <- function(x) {
-  if (x < 0.01) {
-    return("p<0.001")
-  } else {
-    return(paste0("p=", round_k(x, 2)))
-  }
-}
-
 imp_res_all$pval_diff_txt <- sapply(imp_res_all$pval_diff, write_pvalue)
 ```
 
@@ -882,13 +891,6 @@ cc_prop <- df_sub %>%
   ) %>%
   ungroup() %>%
   arrange(variable, event_time)
-
-prop_ci <- function(p, N) {
-  se <- sqrt(p * (1 - p) / N)
-  l <- p - qnorm(0.975) * se
-  u <- p + qnorm(0.975) * se
-  return(c(l, u))
-}
 
 for (out in names(all_outcomes)) {
   # estimate and compare proportions
@@ -1012,6 +1014,238 @@ save_plot(
   pl_comp,
   pdf_file = "results/pericardial-changes.pdf",
   w = 16, h = 8
+)
+```
+
+```{r, isolated-constriction-signs}
+df_constr <- df %>%
+  filter(event_time %in% c("Start", "End")) %>%
+  dplyr::select(
+    record_id,
+    event_time,
+    mv_e_a,
+    mv_dec_time,
+    dilated_ivc,
+    ivc_low_respiratory_change,
+    abnormal_mitral_inflow,
+    ivs_shift,
+    e_septal,
+    e_lateral,
+    septal_bounce,
+    note
+  ) %>%
+  mutate(
+    diast_hep_rev = grepl("hepatic", note, ignore.case = TRUE),
+    diast_hep_rev = ifelse(diast_hep_rev, "Yes", "No"),
+    ann_rev = e_septal / e_lateral,
+    ann_rev = ifelse(ann_rev > 0.9, "Yes", "No"),
+    e_a = ifelse(mv_e_a > 1.5, "Yes", "No"),
+    dt = ifelse(mv_dec_time < 160, "Yes", "No"),
+    ivc_mm = ifelse(dilated_ivc == 1, "Yes", "No"),
+    ivc_var = ifelse(ivc_low_respiratory_change == 1, "Yes", "No"),
+    abnormal_mitral_inflow = ifelse(abnormal_mitral_inflow == 1, "Yes", "No"),
+    septal_bounce = ifelse(septal_bounce == 1, "Yes", "No"),
+    ivs_shift = ifelse(ivs_shift == 1, "Yes", "No"),
+    sign_1 = ifelse(
+      e_a == "Yes" & dt == "Yes" &
+        (ivc_mm == "Yes" | ivc_var == "Yes"),
+      "Yes", "No"
+    ),
+    sign_2 = abnormal_mitral_inflow,
+    sign_3 = ifelse(
+      ivs_shift == "Yes" | septal_bounce == "Yes",
+      "Yes", "No"
+    ),
+    sign_4 = ann_rev,
+    sign_5 = diast_hep_rev,
+    event_time = factor(
+      event_time,
+      levels = c("Start", "End")
+    ),
+    across(
+      c(starts_with("sign_")),
+      ~ factor(.x, levels = c("Yes", "No"))
+    )
+  ) %>%
+  dplyr::select(
+    event_time,
+    starts_with("sign_")
+  )
+
+# compare proportions
+cc_res_cs <- tibble(
+  outcome = c(),
+  prop_m_start = c(),
+  prop_l_start = c(),
+  prop_u_start = c(),
+  prop_m_end = c(),
+  prop_l_end = c(),
+  prop_u_end = c(),
+  prop_m_diff = c(),
+  prop_l_diff = c(),
+  prop_u_diff = c(),
+  pval_diff = c()
+)
+
+cc_prob_cs <- df_constr %>%
+  melt(c("event_time")) %>%
+  group_by(variable, event_time) %>%
+  summarise(
+    n = sum(value == "Yes", na.rm = TRUE),
+    N = sum(!is.na(value)),
+    p = n / N
+  ) %>%
+  ungroup() %>%
+  arrange(variable, event_time)
+
+for (out in paste("sign", 1:5, sep = "_")) {
+  # estimate and compare proportions
+  p0_N <- cc_prob_cs$N[
+    cc_prob_cs$variable == out &
+      cc_prob_cs$event_time == "Start"
+  ]
+  p1_N <- cc_prob_cs$N[
+    cc_prob_cs$variable == out &
+      cc_prob_cs$event_time == "End"
+  ]
+  pd <- prop.test(
+    x = cc_prob_cs$n[cc_prob_cs$variable == out],
+    n = cc_prob_cs$N[cc_prob_cs$variable == out],
+    correct = FALSE
+  )
+
+  # append to results tibble
+  cc_res_cs <- rbind(
+    cc_res_cs,
+    tibble(
+      outcome = out,
+      prop_m_start = pd$estimate[1],
+      prop_l_start = prop_ci(pd$estimate[1], p0_N)[1],
+      prop_u_start = prop_ci(pd$estimate[1], p0_N)[2],
+      prop_m_end = pd$estimate[2],
+      prop_l_end = prop_ci(pd$estimate[2], p1_N)[1],
+      prop_u_end = prop_ci(pd$estimate[2], p1_N)[2],
+      prop_m_diff = pd$estimate[2] - pd$estimate[1],
+      prop_l_diff = pd$conf.int[1],
+      prop_u_diff = pd$conf.int[2],
+      pval_diff = pd$p.value
+    )
+  )
+}
+
+# formatting
+cc_res_cs$pval_diff_txt <- sapply(cc_res_cs$pval_diff, write_pvalue)
+firstup <- function(x) {
+  substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+  x
+}
+
+# plot - data
+cc_res_cs_pldat <- cc_res_cs %>%
+  mutate(
+    outcome = factor(
+      gsub("_", " ", firstup(outcome)),
+      levels = paste("Sign", 1:5)
+    )
+  ) %>%
+  dplyr::select(outcome, matches("_start"), matches("_end")) %>%
+  pivot_longer(
+    cols = -outcome,
+    names_to = "variable",
+    values_to = "value"
+  ) %>%
+  mutate(
+    event_time = ifelse(grepl("start", variable), "Start", "End"),
+    event_time = factor(
+      event_time,
+      levels = c("Start", "End")
+    ),
+    variable = gsub("_start|_end", "", variable)
+  ) %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = value
+  ) %>%
+  arrange(outcome, event_time) %>%
+  mutate(prop_l = ifelse(prop_l < 0, 0, prop_l), prop_u = ifelse(prop_u > 1, 1, prop_u))
+
+# plot - position of pvalues on y-axis
+pval_ypos_cs <- cc_res_cs_pldat %>%
+  group_by(outcome) %>%
+  summarize(
+    p_pos = max(prop_u)
+  ) %>%
+  ungroup() %>%
+  mutate(p_pos = p_pos + 0.025) %>%
+  arrange(outcome) %>%
+  pull(p_pos)
+
+# plot
+pl_comp_cs <- cc_res_cs_pldat %>%
+  ggplot(aes(x = outcome, fill = event_time, y = prop_m)) +
+  geom_bar(
+    stat = "identity",
+    position = position_dodge(width = .66),
+    width = .5
+  ) +
+  geom_errorbar(
+    aes(ymin = prop_l, ymax = prop_u),
+    position = position_dodge(width = .66),
+    width = .2
+  ) +
+  ggsignif::geom_signif(
+    annotations = cc_res_cs$pval_diff_txt,
+    y_position = pval_ypos_cs,
+    xmin = c(.75, 1.75, 2.75, 3.75, 4.75),
+    xmax = c(1.25, 2.25, 3.25, 4.25, 5.25),
+    textsize = 8 / cm(1)
+  ) +
+  scale_y_continuous(
+    breaks = scales::breaks_pretty(5),
+    labels = function(x) scales::percent(x, suffix = ""),
+    expand = expansion(mult = c(0, 0.025))
+  ) +
+  scale_fill_manual(
+    values = c(
+      wes_palette("FrenchDispatch")[2],
+      wes_palette("Moonrise3")[2]
+    )
+  ) +
+  coord_cartesian(ylim = c(0, NA), clip = "off") +
+  labs(y = "Proportion (%)", x = "Signs of constrictions") +
+  theme_custom(8) +
+  theme(
+    legend.position = "bottom", legend.title = element_blank(),
+    axis.title.x = element_blank(),
+    plot.title = element_text(face = 1, size = 8, margin = margin(b = 20)),
+    strip.text = element_text(face = 2),
+    legend.key.height = unit(0.3, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    plot.margin = margin(l = 20, t = 5.5, b = 5.5, r = 5.5)
+  )
+
+save_plot(
+  pl_comp_cs,
+  pdf_file = "results/constriction-signs-changes.pdf",
+  w = 16, h = 8
+)
+
+# table
+cc_res_cs_tab <- cc_prob_cs %>%
+  mutate(freq = paste(n, " / ", N, " (", round(p * 100), "%)", sep = "")) %>%
+  dplyr::select(variable, event_time, freq) %>%
+  spread(event_time, freq) %>%
+  mutate(
+    pval = cc_res_cs$pval_diff_txt,
+    pval = gsub("p|=", "", pval),
+    variable = paste("Sign", 1:5)
+  )
+
+write.table(
+  cc_res_cs_tab,
+  file = "results/table-s3-constriction-signs.txt",
+  row.names = FALSE, col.names = FALSE,
+  sep = ",", quote = FALSE
 )
 ```
 
