@@ -54,21 +54,51 @@ write_pvalue <- function(x) {
 df <- readRDS("data-clean/echo.rds") %>%
   group_by(record_id) %>%
   filter(any(event_time == "Start")) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(
+    diast_hep_rev = grepl("hepatic", note, ignore.case = TRUE),
+    diast_hep_rev = ifelse(diast_hep_rev, "Yes", "No"),
+    ann_rev = e_septal / e_lateral,
+    ann_rev = ifelse(ann_rev > 0.9, "Yes", "No"),
+    e_a = ifelse(mv_e_a > 1.5, "Yes", "No"),
+    dt = ifelse(mv_dec_time < 160, "Yes", "No"),
+    ivc_mm = ifelse(dilated_ivc == 1, "Yes", "No"),
+    ivc_var = ifelse(ivc_low_respiratory_change == 1, "Yes", "No"),
+    abnormal_mitral_inflow = ifelse(abnormal_mitral_inflow == 1, "Yes", "No"),
+    septal_bounce = ifelse(septal_bounce == 1, "Yes", "No"),
+    ivs_shift = ifelse(ivs_shift == 1, "Yes", "No"),
+    sign_1 = ifelse(
+      e_a == "Yes" & dt == "Yes" &
+        (ivc_mm == "Yes" | ivc_var == "Yes"),
+      "Yes", "No"
+    ),
+    sign_2 = abnormal_mitral_inflow,
+    sign_3 = ifelse(
+      ivs_shift == "Yes" | septal_bounce == "Yes",
+      "Yes", "No"
+    ),
+    sign_4 = ann_rev,
+    sign_5 = diast_hep_rev,
+    across(
+      c(starts_with("sign_")),
+      ~ factor(.x, levels = c("Yes", "No"))
+    )
+  )
+
 
 all_outcomes <- c(
   "pericard_effusion" = "Pericardial\neffusion",
   "pericard_thickening" = "Pericardial\nthickening",
   "pericardial_calc" = "Pericardial\ncalcification",
   "constriction_sign" = "Signs of\nconstriction",
-  "constriction" = "Definitive\nconstriction"
+  "constriction" = "Definite\nconstriction"
 )
 all_outcomes_nl <- c(
   "pericard_effusion" = "Pericardial effusion",
   "pericard_thickening" = "Pericardial thickening",
   "pericardial_calc" = "Pericardial calcification",
   "constriction_sign" = "Signs of constriction",
-  "constriction" = "Definitive constriction"
+  "constriction" = "Definite constriction"
 )
 
 nrow(filter(df, event_time == "Start"))
@@ -275,6 +305,11 @@ echo_vars <- c(
   "Pericardial thickening" = "pericard_thickening",
   "Pericardial calcification" = "pericardial_calc",
   "Signs of constrictions" = "constriction_sign",
+  "   Sign 1" = "sign_1",
+  "   Sign 2" = "sign_2",
+  "   Sign 3" = "sign_3",
+  "   Sign 4" = "sign_4",
+  "   Sign 5" = "sign_5",
   "Definitive constrictions" = "constriction",
   "Estimated central venous pressure" = "cvp"
 )
@@ -312,6 +347,11 @@ echo_digits <- c(
   "pericard_thickening" = NA,
   "pericardial_calc" = NA,
   "constriction_sign" = NA,
+  "sign_1" = NA,
+  "sign_2" = NA,
+  "sign_3" = NA,
+  "sign_4" = NA,
+  "sign_5" = NA,
   "constriction" = NA,
   "cvp" = 0
 )
@@ -320,7 +360,6 @@ echo_tab <- tibble(variable = character(), value = character())
 
 fill_tab <- function(dat, tab) {
   for (var in echo_vars) {
-    print(var)
     if (is.numeric(dat[[var]])) {
       n_dig <- echo_digits[var]
       val_med <- round_k(median(dat[[var]], na.rm = TRUE), n_dig)
@@ -1020,51 +1059,10 @@ save_plot(
 ```{r, isolated-constriction-signs}
 df_constr <- df %>%
   filter(event_time %in% c("Start", "End")) %>%
-  dplyr::select(
-    record_id,
-    event_time,
-    mv_e_a,
-    mv_dec_time,
-    dilated_ivc,
-    ivc_low_respiratory_change,
-    abnormal_mitral_inflow,
-    ivs_shift,
-    e_septal,
-    e_lateral,
-    septal_bounce,
-    note
-  ) %>%
   mutate(
-    diast_hep_rev = grepl("hepatic", note, ignore.case = TRUE),
-    diast_hep_rev = ifelse(diast_hep_rev, "Yes", "No"),
-    ann_rev = e_septal / e_lateral,
-    ann_rev = ifelse(ann_rev > 0.9, "Yes", "No"),
-    e_a = ifelse(mv_e_a > 1.5, "Yes", "No"),
-    dt = ifelse(mv_dec_time < 160, "Yes", "No"),
-    ivc_mm = ifelse(dilated_ivc == 1, "Yes", "No"),
-    ivc_var = ifelse(ivc_low_respiratory_change == 1, "Yes", "No"),
-    abnormal_mitral_inflow = ifelse(abnormal_mitral_inflow == 1, "Yes", "No"),
-    septal_bounce = ifelse(septal_bounce == 1, "Yes", "No"),
-    ivs_shift = ifelse(ivs_shift == 1, "Yes", "No"),
-    sign_1 = ifelse(
-      e_a == "Yes" & dt == "Yes" &
-        (ivc_mm == "Yes" | ivc_var == "Yes"),
-      "Yes", "No"
-    ),
-    sign_2 = abnormal_mitral_inflow,
-    sign_3 = ifelse(
-      ivs_shift == "Yes" | septal_bounce == "Yes",
-      "Yes", "No"
-    ),
-    sign_4 = ann_rev,
-    sign_5 = diast_hep_rev,
     event_time = factor(
       event_time,
       levels = c("Start", "End")
-    ),
-    across(
-      c(starts_with("sign_")),
-      ~ factor(.x, levels = c("Yes", "No"))
     )
   ) %>%
   dplyr::select(
