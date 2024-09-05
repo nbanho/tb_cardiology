@@ -8,6 +8,7 @@ echo <- read.csv("data-raw/Z519TBSRNEchoStudy_DATA_2024-02-19_1650.csv") %>%
        dplyr::select(
               record_id,
               redcap_event_name,
+              date_of_tte,
               bmi,
               constriction_sign,
               constriction,

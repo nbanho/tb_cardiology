@@ -82,7 +82,21 @@ df <- readRDS("data-clean/echo.rds") %>%
     across(
       c(starts_with("sign_")),
       ~ factor(.x, levels = c("Yes", "No"))
-    )
+    ),
+    bmi_cat =
+      ifelse(is.na(bmi), "Unknown",
+        ifelse(bmi > 30, "Obese (BMI > 30kg/m2)",
+          ifelse(bmi < 18, "Underweight (BMI < 18kg/m2)",
+            "Normal (18kg/m2 <= BMI <= 30kg/m2)"
+          )
+        )
+      ),
+    bmi_cat = factor(bmi_cat, levels = c(
+      "Obese (BMI > 30kg/m2)",
+      "Normal (18kg/m2 <= BMI <= 30kg/m2)",
+      "Underweight (BMI < 18kg/m2)",
+      "Unknown"
+    ))
   )
 
 
@@ -107,6 +121,45 @@ nrow(filter(df, event_time == "Post"))
 n_distinct(df$record_id)
 ```
 
+```{r follow-up-time}
+fup_times <- df %>%
+  dplyr::select(record_id, event_time, date_of_tte) %>%
+  pivot_wider(names_from = event_time, values_from = date_of_tte) %>%
+  mutate(
+    across(c(Start, End, Post), as.Date),
+    fup_end = as.numeric(End - Start),
+    fup_post = as.numeric(Post - End)
+  )
+
+fup_times_by_event <- fup_times %>%
+  summarise(across(c(fup_end, fup_post), list(
+    median = function(x) median(x, na.rm = TRUE),
+    lower = function(x) quantile(x, .25, na.rm = TRUE),
+    upper = function(x) quantile(x, .75, na.rm = TRUE)
+  ))) %>%
+  mutate_all(round) %>%
+  mutate_all(as.integer)
+
+sprintf(
+  "Median follow-up time overall: %i (IQR %i to %i)",
+  as.integer(median(c(fup_times$fup_end, fup_times$fup_post), na.rm = TRUE)),
+  as.integer(quantile(c(fup_times$fup_end, fup_times$fup_post), .25, na.rm = TRUE)),
+  as.integer(quantile(c(fup_times$fup_end, fup_times$fup_post), .75, na.rm = TRUE))
+)
+
+sprintf(
+  "Median follow-up time between end and start of treatment: %i (IQR %i to %i)",
+  fup_times_by_event$fup_end_median,
+  fup_times_by_event$fup_end_lower,
+  fup_times_by_event$fup_end_upper
+)
+sprintf(
+  "Median follow-up time between end and start of treatment: %i (IQR %i to %i)",
+  fup_times_by_event$fup_post_median,
+  fup_times_by_event$fup_post_lower,
+  fup_times_by_event$fup_post_upper
+)
+```
 
 ## Tables
 
@@ -123,8 +176,7 @@ char_vars <- c(
   "Median age (years)" = "age",
   "Site" = "site",
   "BMI (kg/m2)" = "bmi",
-  "Obesity (BMI > 30kg/m2)" = "obesity",
-  "Underweight (BMI < 18kg/m2)" = "underweight",
+  "BMI stratification" = "bmi_cat",
   "6min walk-test distance (m)" = "smwt_distance_nr",
   "Sit-to-stand test (repetitions per min)" = "fa_sit_to_stand_nr",
   "Systolic Blood Pressure (mmHg)" = "ce_sys_blpress_nr",
@@ -150,7 +202,7 @@ char_digits <- c(
   "age" = 0,
   "site" = NA,
   "bmi" = 1,
-  "obesity" = NA,
+  "bmi_cat" = NA,
   "smwt_distance_nr" = 0,
   "fa_sit_to_stand_nr" = 0,
   "ce_sys_blpress_nr" = 0,
@@ -669,6 +721,11 @@ save_plot(
   pdf_file = "results/sankey-post.pdf",
   w = 16, h = 10
 )
+save_plot(
+  flow_post_pl,
+  pdf_file = "results/sankey-post.tif",
+  w = 16, h = 10
+)
 ```
 
 ## Pericardial abnormalities
@@ -1052,6 +1109,12 @@ pl_comp <- cc_res_all_pldat %>%
 save_plot(
   pl_comp,
   pdf_file = "results/pericardial-changes.pdf",
+  w = 16, h = 8
+)
+
+save_plot(
+  pl_comp,
+  pdf_file = "results/pericardial-changes.tif",
   w = 16, h = 8
 )
 ```
@@ -1497,6 +1560,9 @@ cc_assoc <- tibble(
   time = character(),
   outcome = character(),
   predictor = character(),
+  category = character(),
+  count = numeric(),
+  percentage = numeric(),
   mean = numeric(),
   lower = numeric(),
   upper = numeric(),
@@ -1557,6 +1623,9 @@ for (out in sub_outcomes) {
       time = "Start",
       outcome = out,
       predictor = predictors,
+      category = NA,
+      count = NA,
+      percentage = NA,
       mean = exp(coef_start),
       lower = exp(coef_start - qnorm(.975) * se_start),
       upper = exp(coef_start + qnorm(.975) * se_start),
@@ -1567,6 +1636,9 @@ for (out in sub_outcomes) {
       time = "End",
       outcome = out,
       predictor = predictors,
+      category = NA,
+      count = NA,
+      percentage = NA,
       mean = exp(coef_end),
       lower = exp(coef_end - qnorm(.975) * se_end),
       upper = exp(coef_end + qnorm(.975) * se_end),
@@ -1575,6 +1647,10 @@ for (out in sub_outcomes) {
   )
 
   for (pred in predictors) {
+    # counts
+    counts_start <- table(df_sub[df_sub[["event_time"]] == "Start" & df_sub[[out]] == 1, pred])
+    counts_end <- table(df_sub[df_sub[["event_time"]] == "End" & df_sub[[out]] == 1, pred])
+
     # univariable model
     uni_form <- as.formula(
       paste0(
@@ -1605,6 +1681,9 @@ for (out in sub_outcomes) {
         time = "Start",
         outcome = out,
         predictor = pred,
+        category = names(counts_start),
+        count = counts_start,
+        percentage = counts_start / sum(counts_start),
         mean = exp(coef_start),
         lower = exp(coef_start - qnorm(.975) * se_start),
         upper = exp(coef_start + qnorm(.975) * se_start),
@@ -1615,6 +1694,9 @@ for (out in sub_outcomes) {
         time = "End",
         outcome = out,
         predictor = pred,
+        category = names(counts_end),
+        count = counts_end,
+        percentage = counts_end / sum(counts_end),
         mean = exp(coef_end),
         lower = exp(coef_end - qnorm(.975) * se_end),
         upper = exp(coef_end + qnorm(.975) * se_end),
@@ -1626,6 +1708,18 @@ for (out in sub_outcomes) {
 ```
 
 ```{r, association-table}
+predictor_labs <- c(
+  "age_cat25" = "Age<25",
+  "Yes" = "Age<25",
+  "No" = "Age>=25",
+  "sex" = "Female",
+  "hiv" = "HIV-positive",
+  "Negative" = "HIV-negative",
+  "Positive" = "HIV-positive",
+  "tbd_pat_cat" = "Relapse case",
+  "Relapse" = "Relapse case"
+)
+
 cc_assoc <- cc_assoc %>%
   mutate(
     mci = paste0(
@@ -1634,20 +1728,26 @@ cc_assoc <- cc_assoc %>%
       round_k(lower, 2), " – ", round_k(upper, 2),
       ")"
     ),
-    pvalue_txt = ifelse(pvalue < 0.01, "<0.01", paste0("", round_k(pvalue, 2)))
+    pvalue_txt = ifelse(pvalue < 0.01, "<0.01", paste0("", round_k(pvalue, 2))),
+    category = ifelse(type == "Univariable", category,
+      ifelse(type == "Multivariable", predictor, category)
+    ),
+    category = recode(category, !!!predictor_labs),
+    percentage = round(percentage * 100),
+    count_perc = paste0(count, " (", percentage, ")")
   )
 
 predictor_levels <- matrix(c(
   "Age>=25", "Age<25",
   "Male", "Female",
-  "HIV-", "HIV+",
+  "HIV-negative", "HIV-positive",
   "New case", "Relapse case"
 ), ncol = 2, byrow = TRUE)
 
 assoc_res <- matrix(
   "",
   nrow = (length(predictors) * 2 + 1) * length(sub_outcomes) + 2,
-  ncol = 7
+  ncol = 9
 )
 
 for (t in c("Start", "End")) {
@@ -1655,11 +1755,13 @@ for (t in c("Start", "End")) {
 
   assoc_res[1, ] <- c(
     "Characteristic", "",
+    "", "",
     "Univariable analysis", "", "",
     "Multivariable analysis", ""
   )
   assoc_res[2, ] <- c(
     " ", "",
+    "n (%)", "",
     "OR (95%-CI)", "p-value", "",
     "OR (95%-CI)", "p-value"
   )
@@ -1667,18 +1769,32 @@ for (t in c("Start", "End")) {
   ki <- 2
   for (k in 1:length(sub_outcomes)) {
     ki <- ki + 1
+    count_out <- sum(df_sub[sub_outcomes[k]] == 1 & df_sub$event_time == t, na.rm = TRUE)
+    perc_out <- count_out / sum(!is.na(df_sub[df_sub$event_time == t, sub_outcomes[k]]))
+    count_perc_out <- paste0(count_out, " (", round(100 * perc_out), ")")
     assoc_res[ki, ] <- c(
       all_outcomes_nl[sub_outcomes[k]],
-      rep("", ncol(assoc_res) - 1)
+      "",
+      count_perc_out,
+      "",
+      "", "", "", "", ""
     )
     for (i in 1:length(predictors)) {
       ki <- ki + 1
       assoc_res[ki, ] <- c(
-        paste0("   ", predictor_levels[i, 1]),
+        paste0("   ", predictor_levels[i, 1], " (reference)"),
         "",
-        "1 (reference)",
+        cc_assoc %>%
+          filter(type == "Univariable") %>%
+          filter(category == predictor_levels[i, 1]) %>%
+          filter(time == t) %>%
+          filter(!is.na(count_perc)) %>%
+          filter(outcome == sub_outcomes[k]) %>%
+          pull(count_perc),
+        "",
+        "",
         "", "",
-        "1 (reference)",
+        "",
         ""
       )
       ki <- ki + 1
@@ -1686,8 +1802,16 @@ for (t in c("Start", "End")) {
         paste0("   ", predictor_levels[i, 2]),
         "",
         cc_assoc %>%
+          filter(type == "Univariable") %>%
+          filter(category == predictor_levels[i, 2]) %>%
+          filter(time == t) %>%
+          filter(!is.na(count_perc)) %>%
+          filter(outcome == sub_outcomes[k]) %>%
+          pull(count_perc),
+        "",
+        cc_assoc %>%
           filter(
-            predictor == predictors[i],
+            category == predictor_levels[i, 2],
             type == "Univariable",
             outcome == sub_outcomes[k],
             time == t
@@ -1695,7 +1819,7 @@ for (t in c("Start", "End")) {
           pull(mci),
         cc_assoc %>%
           filter(
-            predictor == predictors[i],
+            category == predictor_levels[i, 2],
             type == "Univariable",
             outcome == sub_outcomes[k],
             time == t
@@ -1704,7 +1828,7 @@ for (t in c("Start", "End")) {
         "",
         cc_assoc %>%
           filter(
-            predictor == predictors[i],
+            category == predictor_levels[i, 2],
             type == "Multivariable",
             outcome == sub_outcomes[k],
             time == t
@@ -1712,7 +1836,7 @@ for (t in c("Start", "End")) {
           pull(mci),
         cc_assoc %>%
           filter(
-            predictor == predictors[i],
+            category == predictor_levels[i, 2],
             type == "Multivariable",
             outcome == sub_outcomes[k],
             time == t
