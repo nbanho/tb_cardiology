@@ -40,11 +40,12 @@ prop_ci <- function(p, N) {
 
 # edit pvalue
 write_pvalue <- function(x) {
-  if (x < 0.01) {
-    return("p<0.001")
-  } else {
-    return(paste0("p=", round_k(x, 2)))
-  }
+  ifelse(
+    x < .001, "P < 0.001",
+    ifelse(x < 0.01, paste("P =", round(x, 3)),
+      paste("P =", round(x, 2))
+    )
+  )
 }
 ```
 
@@ -858,7 +859,7 @@ summary(mod_comp)
 ```{r pericardial-changes}
 # subset primary outcomes
 df_sub <- df %>%
-  filter(event_time %in% c("Start", "End")) %>%
+  dplyr::filter(event_time %in% c("Start", "End")) %>%
   mutate(
     event_time = factor(
       event_time,
@@ -1016,6 +1017,7 @@ cc_prop <- df_sub %>%
     p = n / N
   ) %>%
   ungroup() %>%
+  mutate(event_time = factor(event_time, levels = c("Start", "End"))) %>%
   arrange(variable, event_time)
 
 for (out in names(all_outcomes)) {
